@@ -271,10 +271,11 @@ produced. Every subsequent full-suite run has been clean.
 
 The plan's Step 4 expectation, "everything green," is **met**. The backend suite is **108 passed**
 (a net **+15** over the 93 recorded above; every one of those additions came from the SP0 work — see
-the SP0 section below), the frontend suite is 5 passed, and the production build succeeds. Of the 23
-checklist rows, **21 are clean PASS** and **2 are PASS under the stated scope limit** ("Response AI
-tampil" and "Loading state" were verified through the served modules and a direct markdown render,
-not by opening a browser). **No row is FAIL.** Row 15 was the last failure and is fixed in `2abe3df`.
+the SP0 section below), the frontend suite is **9 passed** (a net **+4** over the 5 recorded above,
+also from the SP0 work), and the production build succeeds. Of the 23 checklist rows, **21 are clean
+PASS** and **2 are PASS under the stated scope limit** ("Response AI tampil" and "Loading state" were
+verified through the served modules and a direct markdown render, not by opening a browser). **No row
+is FAIL.** Row 15 was the last failure and is fixed in `2abe3df`.
 
 Two defects that earlier revisions of this document recorded as unresolved are now closed:
 the 500-instead-of-503 on an unreachable Ollama, and a test-isolation defect that only appeared when
@@ -377,6 +378,32 @@ So the two layers agree: the text check refuses the query, and `rag_readonly` ho
 `documents` only. Note that the query text check alone was the weak layer —
 `db/migrations/002_sql_tool_readonly_scope.sql` records that `FROM "chat_history"` matched nothing in
 the regex until SP0 fix round 1, which is why the grant was revoked as well.
+
+### Command 4 — the frontend suite and build
+
+The Conclusion below cites a current frontend figure, so it is recorded here rather than left as an
+assertion. This does not re-open rows 9–14 in the tables above; their evidence stands as written.
+
+```text
+$ cd frontend && npm test
+ RUN  v5.0.1 /Users/muhammadramadhan/local/ai/frontend
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Duration  1.21s
+
+$ cd frontend && npm run build
+> vue-tsc -b && vite build
+✓ 103 modules transformed.
+dist/index.html                   1.47 kB │ gzip:   0.78 kB
+dist/assets/index-CtFOJOe9.css   20.67 kB │ gzip:   4.96 kB
+dist/assets/index-DPp26XuB.js   263.59 kB │ gzip: 103.03 kB
+✓ built in 637ms
+```
+
+So the build still succeeds, and the frontend suite is now 9 tests in 2 files against the 5 in 1 file
+recorded in Step 4 above — a net **+4**, all of them the four cases in `useAuth.spec.ts`, which did
+not exist before the SP0 work (`10bd345` added it).
 
 ### Documentation correction made with these rows
 
