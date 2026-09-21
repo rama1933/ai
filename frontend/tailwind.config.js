@@ -18,14 +18,50 @@ export default {
         primary: {
           DEFAULT: 'rgb(var(--c-primary) / <alpha-value>)',
           fg: 'rgb(var(--c-primary-fg) / <alpha-value>)',
+          // shadcn-vue spells this half `foreground`; `fg` above is the local
+          // spelling of the same token. Both point at --c-primary-fg.
+          foreground: 'rgb(var(--c-primary-fg) / <alpha-value>)',
           soft: 'rgb(var(--c-primary-soft) / <alpha-value>)',
         },
-        accent: 'rgb(var(--c-accent) / <alpha-value>)',
+        'accent-strong': 'rgb(var(--c-accent) / <alpha-value>)',
         danger: {
           DEFAULT: 'rgb(var(--c-danger) / <alpha-value>)',
           soft: 'rgb(var(--c-danger-soft) / <alpha-value>)',
         },
         success: 'rgb(var(--c-success) / <alpha-value>)',
+
+        // shadcn-vue's expected names, aliased onto the --c-* palette above so
+        // generated components inherit the current colours and dark mode with no
+        // token rename. `primary` above already supplies DEFAULT and `fg`; shadcn
+        // spells the foreground half `foreground`, so both are provided.
+        background: 'rgb(var(--c-bg) / <alpha-value>)',
+        foreground: 'rgb(var(--c-fg) / <alpha-value>)',
+        card: {
+          DEFAULT: 'rgb(var(--c-surface) / <alpha-value>)',
+          foreground: 'rgb(var(--c-fg) / <alpha-value>)',
+        },
+        popover: {
+          DEFAULT: 'rgb(var(--c-elevated) / <alpha-value>)',
+          foreground: 'rgb(var(--c-fg) / <alpha-value>)',
+        },
+        secondary: {
+          DEFAULT: 'rgb(var(--c-primary-soft) / <alpha-value>)',
+          foreground: 'rgb(var(--c-fg) / <alpha-value>)',
+        },
+        muted: {
+          DEFAULT: 'rgb(var(--c-primary-soft) / <alpha-value>)',
+          foreground: 'rgb(var(--c-subtle) / <alpha-value>)',
+        },
+        accent: {
+          DEFAULT: 'rgb(var(--c-primary-soft) / <alpha-value>)',
+          foreground: 'rgb(var(--c-fg) / <alpha-value>)',
+        },
+        destructive: {
+          DEFAULT: 'rgb(var(--c-danger) / <alpha-value>)',
+          foreground: 'rgb(var(--c-danger-fg) / <alpha-value>)',
+        },
+        input: 'rgb(var(--c-border) / <alpha-value>)',
+        ring: 'rgb(var(--c-primary) / <alpha-value>)',
       },
       fontFamily: {
         sans: ['"DM Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],

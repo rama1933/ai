@@ -53,7 +53,7 @@ async function submit(): Promise<void> {
     <div class="w-full max-w-sm animate-fade-up">
       <div class="mb-6 text-center">
         <div
-          class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-fg shadow-glow"
+          class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
           aria-hidden="true"
         >
           <AppIcon name="sparkle" :size="26" />

@@ -30,6 +30,7 @@
     --c-accent: 8 145 178;
     --c-danger: 190 30 30;
     --c-danger-soft: 254 242 242;
+    --c-danger-fg: 255 255 255;
     --c-success: 5 122 85;
     --c-shadow: 15 12 40;
 
@@ -51,6 +52,7 @@
     --c-accent: 34 211 238;
     --c-danger: 248 113 113;
     --c-danger-soft: 42 26 30;
+    --c-danger-fg: 26 20 48;
     --c-success: 52 211 153;
     --c-shadow: 0 0 0;
 

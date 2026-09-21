@@ -52,7 +52,7 @@ function shortName(filename: string): string {
       :class="
         isUser
           ? 'bg-elevated text-subtle ring-1 ring-border'
-          : 'bg-gradient-to-br from-primary to-accent text-primary-fg shadow-glow'
+          : 'bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow'
       "
       aria-hidden="true"
     >

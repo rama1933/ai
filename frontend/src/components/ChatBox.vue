@@ -85,7 +85,7 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
     <header class="border-b border-border bg-surface/80 backdrop-blur-md">
       <div class="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3 sm:px-6">
         <div
-          class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-accent text-primary-fg shadow-glow"
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
           aria-hidden="true"
         >
           <AppIcon name="sparkle" :size="20" />
@@ -124,7 +124,7 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
              no hint of what this assistant can actually do. -->
         <div v-if="!hasConversation && !isLoading" class="animate-fade-up pt-8 text-center sm:pt-16">
           <div
-            class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-fg shadow-glow"
+            class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
             aria-hidden="true"
           >
             <AppIcon name="sparkle" :size="26" />
@@ -154,7 +154,7 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
 
         <div v-if="isLoading" class="flex animate-fade-up gap-3">
           <div
-            class="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-primary-fg shadow-glow"
+            class="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
             aria-hidden="true"
           >
             <AppIcon name="sparkle" :size="15" />
