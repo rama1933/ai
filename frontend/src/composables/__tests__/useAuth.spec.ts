@@ -33,3 +33,14 @@ describe('useAuth.fetchMe', () => {
     expect(auth.isAuthenticated.value).toBe(false)
   })
 })
+
+describe('useAuth.login', () => {
+  it('sets username from the credentials, so it is populated without a reload', async () => {
+    const auth = useAuth()
+    vi.spyOn(api, 'login').mockResolvedValue({ token: 'fresh-token', role: 'USER' })
+
+    await auth.login('siti', 'pw')
+
+    expect(auth.username.value).toBe('siti')
+  })
+})

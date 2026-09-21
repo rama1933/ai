@@ -9,12 +9,18 @@ const username = ref<string | null>(localStorage.getItem(USERNAME_KEY))
 export function useAuth() {
   const isAuthenticated = computed(() => token.value !== null)
 
-  async function login(username: string, password: string): Promise<void> {
-    const result = await api.login(username, password)
+  // The parameter is named `name`, not `username`: a `username` parameter would shadow the
+  // module-level `username` ref above, so the assignment below would write to the string.
+  // `register` stores the username verbatim and `login` matches it with an exact
+  // filter_by(username=...), so this value is the same one `/auth/me` would return.
+  async function login(name: string, password: string): Promise<void> {
+    const result = await api.login(name, password)
     token.value = result.token
     role.value = result.role
+    username.value = name
     localStorage.setItem(TOKEN_KEY, result.token)
     localStorage.setItem(ROLE_KEY, result.role)
+    localStorage.setItem(USERNAME_KEY, name)
   }
 
   function logout(): void {
