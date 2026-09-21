@@ -49,9 +49,21 @@ FROM chat_history h
 WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = h.session_id)
 GROUP BY h.session_id;
 
+-- Guard on the column rather than a constraint name: a database built from
+-- db/schema.sql already carries an inline FK on chat_history.session_id, and adding a
+-- second, differently-named FK to the same column is not idempotent in any useful
+-- sense -- it is duplicate schema.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chat_history_session_fk') THEN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+        WHERE c.conrelid = 'chat_history'::regclass
+          AND c.contype = 'f'
+          AND a.attname = 'session_id'
+    ) THEN
         ALTER TABLE chat_history
             ADD CONSTRAINT chat_history_session_fk
             FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
