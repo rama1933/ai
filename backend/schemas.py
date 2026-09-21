@@ -25,6 +25,13 @@ class ChatRequest(BaseModel):
     image_path: str | None = None
 
 
+class StreamChatRequest(ChatRequest):
+    """Body of POST /chat/stream. truncate_after_id drops every row after it in
+    this session before the turn runs -- the mechanism behind regenerate/edit."""
+
+    truncate_after_id: int | None = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     tool_used: str | None = None
@@ -32,6 +39,7 @@ class ChatResponse(BaseModel):
 
 
 class HistoryItem(BaseModel):
+    id: int
     role: str
     message: str
     created_at: datetime
