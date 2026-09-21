@@ -1,3 +1,4 @@
+import axios from 'axios'
 import { computed, ref } from 'vue'
 
 import { api, ROLE_KEY, TOKEN_KEY, USERNAME_KEY } from '../services/api'
@@ -40,8 +41,11 @@ export function useAuth() {
       role.value = me.role
       localStorage.setItem(USERNAME_KEY, me.username)
       localStorage.setItem(ROLE_KEY, me.role)
-    } catch {
-      logout()
+    } catch (error) {
+      // Sign out only when the server actually rejected the token. A network
+      // failure or a 500 leaves the token valid, and the axios interceptor
+      // deliberately defers /auth/* 401s to this function (api.ts:51).
+      if (axios.isAxiosError(error) && error.response?.status === 401) logout()
     }
   }
 

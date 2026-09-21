@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { AxiosError, type AxiosResponse } from 'axios'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '../../services/api'
 import { useAuth } from '../useAuth'
+
+// vite.config.ts sets no restoreMocks, so without this the spied api methods
+// stay mocked for every case added below them.
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 // useAuth holds its state in module-level refs, so these tests drive that state
 // through the refs it returns. Clearing localStorage between cases would not reset
@@ -26,11 +33,27 @@ describe('useAuth.fetchMe', () => {
   it('clears the session when the stored token is rejected', async () => {
     const auth = useAuth()
     auth.token.value = 'stale-token'
-    vi.spyOn(api, 'fetchMe').mockRejectedValue(new Error('401'))
+    // A real AxiosError carrying a 401: the case the axios interceptor defers here.
+    const rejected = new AxiosError('Unauthorized', 'ERR_BAD_REQUEST', undefined, undefined, {
+      status: 401,
+    } as AxiosResponse)
+    vi.spyOn(api, 'fetchMe').mockRejectedValue(rejected)
 
     await auth.fetchMe()
 
     expect(auth.isAuthenticated.value).toBe(false)
+  })
+
+  it('keeps the session when the call fails for a reason other than a rejection', async () => {
+    const auth = useAuth()
+    auth.token.value = 'good-token'
+    // What axios throws when the connection drops: an AxiosError with no response.
+    // The token is still valid, so signing the person out here would be wrong.
+    vi.spyOn(api, 'fetchMe').mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'))
+
+    await auth.fetchMe()
+
+    expect(auth.isAuthenticated.value).toBe(true)
   })
 })
 
@@ -39,8 +62,8 @@ describe('useAuth.login', () => {
     const auth = useAuth()
     vi.spyOn(api, 'login').mockResolvedValue({ token: 'fresh-token', role: 'USER' })
 
-    await auth.login('siti', 'pw')
+    await auth.login('budi', 'pw')
 
-    expect(auth.username.value).toBe('siti')
+    expect(auth.username.value).toBe('budi')
   })
 })
