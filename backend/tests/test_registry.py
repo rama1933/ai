@@ -17,7 +17,7 @@ def test_dispatch_rag_search_wraps_results_as_untrusted(monkeypatch):
         registry, "rag_search",
         lambda db, query, top_k=4: [RagHit(filename="policy.pdf", content="retensi 5 tahun", score=0.91)],
     )
-    outcome = registry.dispatch("rag_search", {"query": "retensi"}, db=None, image_path=None)
+    outcome = registry.dispatch("rag_search", {"query": "retensi"}, db=None, image_paths=[])
 
     assert registry.UNTRUSTED_HEADER in outcome.text
     assert "retensi 5 tahun" in outcome.text
@@ -27,7 +27,7 @@ def test_dispatch_rag_search_wraps_results_as_untrusted(monkeypatch):
 
 def test_dispatch_rag_search_reports_no_match(monkeypatch):
     monkeypatch.setattr(registry, "rag_search", lambda db, query, top_k=4: [])
-    outcome = registry.dispatch("rag_search", {"query": "apa pun"}, db=None, image_path=None)
+    outcome = registry.dispatch("rag_search", {"query": "apa pun"}, db=None, image_paths=[])
     assert "tidak ditemukan" in outcome.text.lower() or "no matching" in outcome.text.lower()
     assert outcome.sources == []
 
@@ -37,7 +37,7 @@ def test_dispatch_image_ocr_uses_session_image_not_model_supplied_path(monkeypat
     monkeypatch.setattr(registry, "image_ocr", lambda path: seen.update(path=path) or "TOTAL 150000")
 
     outcome = registry.dispatch(
-        "image_ocr", {"image_path": "/etc/passwd"}, db=None, image_path="/uploads/abc-struk.png"
+        "image_ocr", {"image_path": "/etc/passwd"}, db=None, image_paths=["/uploads/abc-struk.png"]
     )
 
     assert seen["path"] == "/uploads/abc-struk.png"
@@ -45,7 +45,7 @@ def test_dispatch_image_ocr_uses_session_image_not_model_supplied_path(monkeypat
 
 
 def test_dispatch_image_ocr_without_uploaded_image_is_an_error_message(monkeypatch):
-    outcome = registry.dispatch("image_ocr", {}, db=None, image_path=None)
+    outcome = registry.dispatch("image_ocr", {}, db=None, image_paths=[])
     assert "no image" in outcome.text.lower()
 
 
@@ -56,12 +56,12 @@ def test_dispatch_sql_query_returns_rejection_as_text_not_exception(monkeypatch)
         raise SqlRejected("table 'users' is not allowed")
 
     monkeypatch.setattr(registry, "sql_query", reject)
-    outcome = registry.dispatch("sql_query", {"query": "SELECT * FROM users"}, db=None, image_path=None)
+    outcome = registry.dispatch("sql_query", {"query": "SELECT * FROM users"}, db=None, image_paths=[])
 
     assert "not allowed" in outcome.text
     assert outcome.sources == []
 
 
 def test_dispatch_unknown_tool_returns_error_text():
-    outcome = registry.dispatch("rm_rf", {}, db=None, image_path=None)
+    outcome = registry.dispatch("rm_rf", {}, db=None, image_paths=[])
     assert "unknown tool" in outcome.text.lower()

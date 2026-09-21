@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from schemas import SourceRef
+from services.upload_service import display_name_of
 from tools.ocr_tool import OcrError, image_ocr
 from tools.rag_tool import rag_search
 from tools.sql_tool import SqlRejected, sql_query
@@ -68,8 +70,13 @@ def _wrap(payload: str) -> str:
     return f"{UNTRUSTED_HEADER}\n{payload}\n{UNTRUSTED_FOOTER}"
 
 
-def dispatch(name: str, arguments: dict, db: Session | None, image_path: str | None) -> ToolOutcome:
-    """Run one tool call. Failures come back as text so the model can recover."""
+def dispatch(name: str, arguments: dict, db: Session | None, image_paths: list[str] | None) -> ToolOutcome:
+    """Run one tool call. Failures come back as text so the model can recover.
+
+    image_paths carries the caller's attached images, resolved from the
+    authenticated request -- never a name the model chose; the tool schemas
+    deliberately expose no file parameter.
+    """
     if name == "rag_search":
         hits = rag_search(db, str(arguments.get("query", "")))
         if not hits:
@@ -81,16 +88,25 @@ def dispatch(name: str, arguments: dict, db: Session | None, image_path: str | N
         )
 
     if name == "image_ocr":
-        # The model never chooses the file; only the authenticated request does.
-        if not image_path:
+        # Every attached image is read; the model cannot name one.
+        paths = image_paths or []
+        if not paths:
             return ToolOutcome(text="No image was attached to this message, so OCR is not possible.")
-        try:
-            text = image_ocr(image_path)
-        except OcrError as exc:
-            return ToolOutcome(text=f"OCR failed: {exc}")
-        if not text:
-            return ToolOutcome(text="OCR found no readable text in the attached image.")
-        return ToolOutcome(text=_wrap(text), sources=[SourceRef(filename=image_path.rsplit("/", 1)[-1])])
+        sections: list[str] = []
+        sources: list[SourceRef] = []
+        for path in paths:
+            display = display_name_of(Path(path).name)
+            try:
+                text = image_ocr(path)
+            except OcrError as exc:
+                sections.append(f"[{display}]\nOCR failed: {exc}")
+                continue
+            if not text:
+                sections.append(f"[{display}]\nOCR found no readable text in this image.")
+                continue
+            sections.append(f"[{display}]\n{text}")
+            sources.append(SourceRef(filename=display))
+        return ToolOutcome(text=_wrap("\n\n".join(sections)), sources=sources)
 
     if name == "sql_query":
         try:

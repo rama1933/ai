@@ -57,6 +57,13 @@ def _looks_like_text(head: bytes) -> bool:
     return True
 
 
+def _check_signature(suffix: str, signatures: tuple[bytes, ...], head: bytes) -> None:
+    if signatures and not any(head.startswith(sig) for sig in signatures):
+        raise UploadRejected(f"file signature does not match extension {suffix!r}")
+    if suffix in TEXT_SUFFIXES and not _looks_like_text(head):
+        raise UploadRejected(f"file signature does not match extension {suffix!r}")
+
+
 def classify(filename: str, content_type: str, head: bytes) -> str:
     suffix = Path(filename).suffix.lower()
     rule = RULES.get(suffix)
@@ -66,11 +73,35 @@ def classify(filename: str, content_type: str, head: bytes) -> str:
     kind, allowed_mimes, signatures = rule
     if content_type.split(";")[0].strip() not in allowed_mimes:
         raise UploadRejected(f"MIME type {content_type!r} does not match extension {suffix!r}")
-    if signatures and not any(head.startswith(sig) for sig in signatures):
-        raise UploadRejected(f"file signature does not match extension {suffix!r}")
-    if suffix in TEXT_SUFFIXES and not _looks_like_text(head):
-        raise UploadRejected(f"file signature does not match extension {suffix!r}")
+    _check_signature(suffix, signatures, head)
     return kind
+
+
+def sniff(filename: str, head: bytes) -> tuple[str, str]:
+    """Derive (kind, mime) from the file on disk, never from client metadata.
+
+    A message references its attachments by stored name only, so the kind that
+    picks the OCR branch is re-derived here at chat time: a caller cannot mislabel
+    a payload as an image.
+    """
+    suffix = Path(filename).suffix.lower()
+    rule = RULES.get(suffix)
+    if rule is None:
+        raise UploadRejected(f"extension {suffix!r} is not allowed; allowed: {sorted(RULES)}")
+    kind, allowed_mimes, signatures = rule
+    _check_signature(suffix, signatures, head)
+    # The canonical member of the rule's allowed set; text rules also allow
+    # application/octet-stream, which is the fallback, never the answer.
+    mime = next((m for m in sorted(allowed_mimes) if m != "application/octet-stream"), "application/octet-stream")
+    return kind, mime
+
+
+def display_name_of(stored_name: str) -> str:
+    """stored.name minus the `{uuid4() hex}-` prefix save_upload prepends."""
+    prefix, sep, rest = stored_name.partition("-")
+    if sep and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+        return rest
+    return stored_name
 
 
 def _safe_name(filename: str) -> str:

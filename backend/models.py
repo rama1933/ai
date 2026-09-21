@@ -49,6 +49,10 @@ class ChatHistory(Base):
     session_id: Mapped[str] = mapped_column(String(100), ForeignKey("sessions.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     message: Mapped[str] = mapped_column(Text)
+    # The attachments that travel with THIS message: a list of {stored_name,
+    # display_name, kind, mime, size}. JSONB, not a join table -- an attachment is
+    # never read except alongside its message, and deletion already cascades.
+    attachments: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

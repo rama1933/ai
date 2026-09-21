@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from routers import auth, chat, documents, health, sessions, upload
+from routers import attachments, auth, chat, documents, health, sessions, upload
 
 
 def create_app() -> FastAPI:
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     app.include_router(upload.router)
     app.include_router(chat.router)
     app.include_router(sessions.router)
+    app.include_router(attachments.router)
     return app
 
 

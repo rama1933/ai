@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS chat_history (
     session_id VARCHAR(100) NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role       VARCHAR(20)  NOT NULL,
     message    TEXT         NOT NULL,
+    attachments JSONB        NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chat_history_role_check CHECK (role IN ('user', 'assistant', 'system', 'tool'))
 );

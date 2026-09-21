@@ -1,5 +1,6 @@
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,7 @@ from database import SessionLocal, get_db
 from models import ChatHistory, User
 from schemas import ChatRequest, ChatResponse, HistoryItem, StreamChatRequest
 from security import get_current_user, get_or_create_session, require_owned_session
+from services.upload_service import UploadRejected, display_name_of, sniff
 
 router = APIRouter(tags=["chat"])
 
@@ -32,15 +34,56 @@ def _title_from(message: str) -> str:
     return trimmed[:TITLE_LIMIT].rsplit(" ", 1)[0]
 
 
-def _resolve_image(image_name: str | None) -> str | None:
-    """Map the client-supplied upload name onto a real path inside upload_dir."""
-    if not image_name:
-        return None
+@dataclass
+class ResolvedAttachment:
+    """An attachment re-derived from the file on disk at chat time."""
+
+    stored_name: str
+    display_name: str
+    kind: str
+    mime: str
+    size: int
+    path: str
+
+    def ref(self) -> dict:
+        return {
+            "stored_name": self.stored_name,
+            "display_name": self.display_name,
+            "kind": self.kind,
+            "mime": self.mime,
+            "size": self.size,
+        }
+
+
+def _resolve_attachments(names: list[str]) -> list[ResolvedAttachment]:
+    """Map client-supplied stored names onto real files inside upload_dir.
+
+    The same per-item guard _resolve_image used, now applied to each name: only
+    the final path component is taken, it must stay inside upload_dir and exist.
+    Kind and MIME are re-derived from the file -- never from the request.
+    """
     upload_dir = Path(get_settings().upload_dir).resolve()
-    candidate = (upload_dir / Path(image_name).name).resolve()
-    if not candidate.is_relative_to(upload_dir) or not candidate.is_file():
-        raise HTTPException(status_code=400, detail="unknown image; upload it first via POST /upload")
-    return str(candidate)
+    resolved: list[ResolvedAttachment] = []
+    for name in names:
+        candidate = (upload_dir / Path(name).name).resolve()
+        if not candidate.is_relative_to(upload_dir) or not candidate.is_file():
+            raise HTTPException(status_code=400, detail="unknown attachment; upload it first via POST /upload")
+        try:
+            with candidate.open("rb") as handle:
+                kind, mime = sniff(candidate.name, handle.read(64))
+        except UploadRejected as exc:
+            raise HTTPException(status_code=400, detail=f"stored file no longer matches its name: {exc}") from exc
+        resolved.append(
+            ResolvedAttachment(
+                stored_name=candidate.name,
+                display_name=display_name_of(candidate.name),
+                kind=kind,
+                mime=mime,
+                size=candidate.stat().st_size,
+                path=str(candidate),
+            )
+        )
+    return resolved
 
 
 def _prepare_turn(
@@ -48,7 +91,7 @@ def _prepare_turn(
     payload: ChatRequest,
     user: User,
     truncate_after_id: int | None = None,
-) -> tuple[list[str], list[dict]]:
+) -> tuple[list[ResolvedAttachment], list[dict]]:
     """Shared preamble of both chat endpoints: attachment resolution, ownership,
     truncation, the history window, and the user-row insert.
 
@@ -56,7 +99,7 @@ def _prepare_turn(
     the streaming endpoint must commit before it returns the StreamingResponse,
     because its dependency session is closed by then.
     """
-    image_path = _resolve_image(payload.image_path)
+    resolved = _resolve_attachments(payload.attachments)
     session = get_or_create_session(db, payload.session_id, user)
     if session.title is None:  # auto-title from the first message only
         session.title = _title_from(payload.message)
@@ -77,9 +120,16 @@ def _prepare_turn(
     )
     history = [{"role": row.role, "content": row.message} for row in reversed(prior)]
 
-    db.add(ChatHistory(session_id=payload.session_id, role="user", message=payload.message))
+    db.add(
+        ChatHistory(
+            session_id=payload.session_id,
+            role="user",
+            message=payload.message,
+            attachments=[r.ref() for r in resolved],
+        )
+    )
     db.flush()
-    return ([image_path] if image_path else []), history
+    return resolved, history
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -88,7 +138,8 @@ def chat(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
-    image_paths, history = _prepare_turn(db, payload, user)
+    resolved, history = _prepare_turn(db, payload, user)
+    image_paths = [r.path for r in resolved if r.kind == "image"]
 
     try:
         result = run_agent(db=db, message=payload.message, history=history, image_paths=image_paths)
@@ -122,7 +173,8 @@ def chat_stream(
     # sent, so the request's db session is closed by the time the generator runs.
     session_id = payload.session_id
     message = payload.message
-    image_paths, history = _prepare_turn(db, payload, user, truncate_after_id=payload.truncate_after_id)
+    resolved, history = _prepare_turn(db, payload, user, truncate_after_id=payload.truncate_after_id)
+    image_paths = [r.path for r in resolved if r.kind == "image"]
     db.commit()  # the pre-stream work is one unit; the generator opens its own session
 
     def event_source() -> Iterator[str]:

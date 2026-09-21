@@ -215,9 +215,7 @@ def stream_agent(
                     arguments = {}
 
             yield {"type": "tool", "name": name}
-            outcome = registry.dispatch(
-                name, arguments, db=db, image_path=image_paths[0] if image_paths else None
-            )
+            outcome = registry.dispatch(name, arguments, db=db, image_paths=image_paths or [])
             if tool_used is None:  # the agent's first choice, stable for callers and tests
                 tool_used = name
             sources.extend(outcome.sources)

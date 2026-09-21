@@ -7,7 +7,7 @@ from schemas import UploadResponse
 from security import get_current_user
 from services.document_service import IngestError, ingest_file
 from services.embedding_service import EmbeddingError
-from services.upload_service import UploadRejected, classify, save_upload
+from services.upload_service import UploadRejected, display_name_of, save_upload, sniff
 
 router = APIRouter(tags=["upload"])
 
@@ -24,7 +24,21 @@ def upload(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     with stored.open("rb") as handle:
-        kind = classify(stored.name, file.content_type or "", handle.read(64))
+        kind, mime = sniff(stored.name, handle.read(64))
+
+    def response(status: str) -> UploadResponse:
+        # filename keeps its documented meaning (the stored name); the richer
+        # fields let the UI show a chip without ever trusting client metadata.
+        return UploadResponse(
+            filename=stored.name,
+            status=status,
+            kind=kind,
+            stored_name=stored.name,
+            display_name=display_name_of(stored.name),
+            mime=mime,
+            size=stored.stat().st_size,
+        )
+
     if kind == "document":
         try:
             ingest_file(db, stored, user.id)
@@ -32,7 +46,7 @@ def upload(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EmbeddingError as exc:
             raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
-        return UploadResponse(filename=stored.name, status="processed", kind=kind)
+        return response("processed")
 
     # Images are not OCR'd here: the agent decides whether OCR is needed.
-    return UploadResponse(filename=stored.name, status="stored", kind=kind)
+    return response("stored")

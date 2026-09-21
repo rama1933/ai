@@ -104,11 +104,15 @@ def ingested_policy(client, auth) -> str:
     session.close()
 
 
-def _ask(client, auth, message: str, image_path: str | None = None) -> dict:
+def _ask(client, auth, message: str, attachment: str | None = None) -> dict:
     response = client.post(
         "/chat",
         headers=auth,
-        json={"session_id": f"e2e-{uuid.uuid4().hex[:8]}", "message": message, "image_path": image_path},
+        json={
+            "session_id": f"e2e-{uuid.uuid4().hex[:8]}",
+            "message": message,
+            **({"attachments": [attachment]} if attachment else {}),
+        },
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -127,7 +131,7 @@ def test_ocr_001_image_question_uses_ocr(client, auth):
     assert upload.status_code == 200
     stored = upload.json()["filename"]
 
-    body = _ask(client, auth, "Berapa total transaksi pada struk ini?", image_path=stored)
+    body = _ask(client, auth, "Berapa total transaksi pada struk ini?", attachment=stored)
     assert body["tool_used"] == "image_ocr"
     assert "43000" in body["answer"].replace(".", "").replace(",", "")
 
