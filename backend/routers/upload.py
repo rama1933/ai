@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from database import get_db
+from models import User
 from schemas import UploadResponse
+from security import get_current_user
 from services.document_service import IngestError, ingest_file
 from services.upload_service import UploadRejected, classify, save_upload
 
@@ -10,7 +12,11 @@ router = APIRouter(tags=["upload"])
 
 
 @router.post("/upload", response_model=UploadResponse)
-def upload(file: UploadFile = File(...), db: Session = Depends(get_db)) -> UploadResponse:
+def upload(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> UploadResponse:
     try:
         stored = save_upload(file, allowed_kinds={"image", "document"})
     except UploadRejected as exc:

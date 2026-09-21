@@ -53,6 +53,5 @@ def test_password_is_not_stored_in_plain_text(client, fresh_username):
     assert stored.password_hash.startswith("$2")
 
 
-@pytest.mark.xfail(reason="route added in Task 13", strict=False)
 def test_protected_route_requires_token(client):
     assert client.get("/chat/history?session_id=x").status_code == 401
