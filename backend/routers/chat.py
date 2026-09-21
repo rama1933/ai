@@ -8,7 +8,7 @@ from config import get_settings
 from database import get_db
 from models import ChatHistory, User
 from schemas import ChatRequest, ChatResponse, HistoryItem
-from security import get_current_user
+from security import get_current_user, get_or_create_session, require_owned_session
 
 router = APIRouter(tags=["chat"])
 
@@ -33,6 +33,7 @@ def chat(
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
     image_path = _resolve_image(payload.image_path)
+    get_or_create_session(db, payload.session_id, user)
 
     prior = (
         db.query(ChatHistory)
@@ -62,6 +63,7 @@ def history(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[ChatHistory]:
+    require_owned_session(db, session_id, user)
     return (
         db.query(ChatHistory)
         .filter_by(session_id=session_id)

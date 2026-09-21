@@ -4,7 +4,7 @@ import pytest
 
 from agent.orchestrator import AgentResult
 from database import SessionLocal
-from models import ChatHistory, User
+from models import ChatHistory, ChatSession, User
 from schemas import SourceRef
 
 
@@ -25,7 +25,7 @@ def session_id() -> str:
     sid = f"test-{uuid.uuid4().hex[:8]}"
     yield sid
     session = SessionLocal()
-    session.query(ChatHistory).filter_by(session_id=sid).delete(synchronize_session=False)
+    session.query(ChatSession).filter_by(id=sid).delete(synchronize_session=False)
     session.commit()
     session.close()
 

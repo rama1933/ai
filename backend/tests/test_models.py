@@ -1,8 +1,10 @@
+import uuid
+
 import pytest
 from sqlalchemy import text
 
 from database import SessionLocal
-from models import ChatHistory, Document
+from models import ChatHistory, ChatSession, Document, User
 
 
 @pytest.fixture
@@ -14,6 +16,11 @@ def db():
 
 
 def test_can_insert_and_read_chat_history(db):
+    owner = User(username=f"model-{uuid.uuid4().hex[:8]}", password_hash="x", role="USER")
+    db.add(owner)
+    db.flush()
+    db.add(ChatSession(id="test-session", user_id=owner.id))
+    db.flush()
     db.add(ChatHistory(session_id="test-session", role="user", message="halo"))
     db.flush()
     row = db.query(ChatHistory).filter_by(session_id="test-session").one()

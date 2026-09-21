@@ -5,11 +5,12 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import get_settings
 from database import get_db
-from models import User
+from models import ChatSession, User
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _bearer = HTTPBearer(auto_error=False)
@@ -61,3 +62,37 @@ def require_role(*roles: str) -> Callable[[User], User]:
         return user
 
     return dependency
+
+
+def require_owned_session(db: Session, session_id: str, user: User) -> ChatSession:
+    """Return the caller's session.
+
+    404 rather than 403 on both branches, deliberately: a 403 would confirm that the
+    session exists, which is exactly the fact an attacker wants. "No such session" and
+    "not yours" must be indistinguishable.
+    """
+    session = db.query(ChatSession).filter_by(id=session_id).one_or_none()
+    if session is None or session.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown session")
+    return session
+
+
+def get_or_create_session(db: Session, session_id: str, user: User) -> ChatSession:
+    """Return the caller's session, creating it on the first message.
+
+    The explicit flush is load-bearing, not stylistic. `chat()` adds the ChatHistory
+    row and calls a single `db.flush()`, so both INSERTs are pending in one unit of
+    work. SQLAlchemy orders pending INSERTs by `Mapper._sort_key` -- module.ClassName --
+    because these models declare no relationship() to give it a dependency edge, and
+    `models.ChatHistory` sorts before `models.ChatSession`. Without the flush the
+    chat_history INSERT goes first and the foreign key rejects it.
+    """
+    session = db.query(ChatSession).filter_by(id=session_id).one_or_none()
+    if session is None:
+        session = ChatSession(id=session_id, user_id=user.id)
+        db.add(session)
+        db.flush()
+    elif session.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown session")
+    session.updated_at = func.now()
+    return session
