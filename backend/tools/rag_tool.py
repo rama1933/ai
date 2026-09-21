@@ -48,3 +48,24 @@ def rag_search(
         if 1.0 - float(dist) >= min_score
     ]
     return hits[:top_k]
+
+
+def first_chunks(db: Session, filenames: list[str], limit: int = 4) -> list[RagHit]:
+    """The opening chunks of the given documents, in stored order.
+
+    Deterministic fallback for scoped retrieval: a vague question ("pelajari
+    dokumen ini") can embed too weakly to clear the score floor against any
+    chunk, but a document's first chunks carry its title and subject line --
+    exactly the context summarising needs. No score filtering: the intent is
+    coverage of these files, not similarity.
+    """
+    if not filenames:
+        return []
+    rows = (
+        db.query(Document.filename, Document.content)
+        .filter(Document.filename.in_(filenames))
+        .order_by(Document.id.asc())
+        .limit(limit)
+        .all()
+    )
+    return [RagHit(filename=filename, content=content, score=1.0) for filename, content in rows]

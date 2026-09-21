@@ -69,12 +69,20 @@ def test_dispatch_unknown_tool_returns_error_text():
 
 def test_dispatch_scopes_rag_search_to_session_documents(monkeypatch):
     """document_filenames rides in from the session like image_paths does for
-    OCR -- server-derived, never chosen by the model."""
+    OCR -- server-derived, never chosen by the model. When the model's query is
+    too weak to clear the floor against those files, the opening chunks step in
+    so a summary request still gets the document's title and subject."""
     seen = {}
     monkeypatch.setattr(
         registry, "rag_search", lambda db, query, top_k=4, filenames=None: seen.update(
             query=query, top_k=top_k, filenames=filenames
         ) or []
+    )
+    fallback = {}
+    monkeypatch.setattr(
+        registry, "first_chunks", lambda db, filenames, limit=4: fallback.update(
+            filenames=filenames, limit=limit
+        ) or [RagHit(filename="abc-laporan.pdf", content="KEPUTUSAN BUPATI TENTANG REDISTRIBUSI TANAH", score=1.0)]
     )
 
     outcome = registry.dispatch(
@@ -84,4 +92,26 @@ def test_dispatch_scopes_rag_search_to_session_documents(monkeypatch):
 
     assert seen["filenames"] == ["abc-laporan.pdf"]
     assert seen["top_k"] == 6  # scoped reads go a little deeper
-    assert "tidak ditemukan" in outcome.text.lower() or "no matching" in outcome.text.lower()
+    assert fallback["filenames"] == ["abc-laporan.pdf"]
+    assert "KEPUTUSAN BUPATI" in outcome.text  # the opening chunk reached the model
+
+
+def test_dispatch_rag_search_without_session_documents_stays_global(monkeypatch):
+    """No session documents, no scoping and no fallback: plain global search."""
+    seen = {}
+    monkeypatch.setattr(
+        registry, "rag_search",
+        lambda db, query, top_k=4, filenames=None: seen.update(top_k=top_k, filenames=filenames) or [
+            RagHit(filename="policy.pdf", content="retensi 5 tahun", score=0.9)
+        ],
+    )
+    monkeypatch.setattr(
+        registry, "first_chunks",
+        lambda db, filenames, limit=4: (_ for _ in ()).throw(AssertionError("fallback must not run")),
+    )
+
+    outcome = registry.dispatch("rag_search", {"query": "masa retensi"}, db=None, image_paths=[])
+
+    assert seen["top_k"] == 4
+    assert seen["filenames"] is None
+    assert "retensi 5 tahun" in outcome.text
