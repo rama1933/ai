@@ -25,6 +25,7 @@ export interface UploadResponse {
 
 export const TOKEN_KEY = 'agentic-rag-token'
 export const ROLE_KEY = 'agentic-rag-role'
+export const USERNAME_KEY = 'agentic-rag-username'
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000',
@@ -91,6 +92,11 @@ export const api = {
   async login(username: string, password: string): Promise<{ token: string; role: string }> {
     const { data } = await http.post('/auth/login', { username, password })
     return { token: data.access_token, role: data.role }
+  },
+
+  async fetchMe(): Promise<{ username: string; role: string; created_at: string }> {
+    const { data } = await http.get('/auth/me')
+    return data
   },
 
   async register(username: string, password: string): Promise<void> {
