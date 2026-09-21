@@ -10,11 +10,36 @@ import pytest
 from agent import registry
 from agent.orchestrator import AgentResult
 from database import SessionLocal
-from models import User
+from models import Document, User
 from schemas import SourceRef
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 UPLOAD_DIR = Path("../storage/uploads")
+
+# A minimal structurally valid PDF whose text pypdf can extract, so the ingest
+# branch accepts it.
+_PDF_STREAM = b"BT /F1 18 Tf 72 720 Td (Laporan anggaran 2026: total Rp 250 juta.) Tj ET"
+_PDF_OBJS = [
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n",
+    b"4 0 obj<</Length " + str(len(_PDF_STREAM)).encode() + b">>stream\n" + _PDF_STREAM + b"\nendstream\nendobj\n",
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n",
+]
+
+
+def _build_pdf() -> bytes:
+    header, body, offsets = b"%PDF-1.4\n", b"", []
+    for obj in _PDF_OBJS:
+        offsets.append(len(header) + len(body))
+        body += obj
+    xref_pos = len(header) + len(body)
+    xref = b"xref\n0 6\n0000000000 65535 f \n" + b"".join(("%010d 00000 n \n" % off).encode() for off in offsets)
+    trailer = b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n" + str(xref_pos).encode() + b"\n%%EOF\n"
+    return header + body + xref + trailer
+
+
+PDF_VALID = _build_pdf()
 
 
 def _username_of(headers: dict[str, str]) -> str:
@@ -42,7 +67,7 @@ def quiet_agent(monkeypatch):
     monkeypatch.setattr(
         chat_router,
         "run_agent",
-        lambda db, message, history, image_paths: AgentResult(answer="ok", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths, document_filenames=None: AgentResult(answer="ok", tool_used=None, sources=[]),
     )
 
 
@@ -113,7 +138,7 @@ def test_only_images_reach_the_agent_as_image_paths(client, auth_headers, sessio
 
     captured = {}
 
-    def fake_run_agent(db, message, history, image_paths):
+    def fake_run_agent(db, message, history, image_paths, document_filenames=None):
         captured["image_paths"] = image_paths
         return AgentResult(answer="ok", tool_used=None, sources=[])
 
@@ -247,3 +272,57 @@ def test_more_than_five_attachments_is_rejected_at_validation(client, auth_heade
     )
 
     assert response.status_code == 422
+
+
+def test_session_documents_thread_to_the_agent_for_retrieval_scoping(
+    client, auth_headers, session_id, monkeypatch
+):
+    """A document uploaded earlier in the conversation scopes later retrieval:
+    'pelajari dokumen ini' must anchor to it, not to the whole shared corpus."""
+    from routers import chat as chat_router
+
+    captured = {}
+
+    def fake_run_agent(db, message, history, image_paths, document_filenames=None):
+        captured["document_filenames"] = document_filenames
+        return AgentResult(answer="ok", tool_used=None, sources=[])
+
+    monkeypatch.setattr(chat_router, "run_agent", fake_run_agent)
+    from services import document_service
+
+    monkeypatch.setattr(document_service, "embed_texts", lambda texts: [[0.01] * 768 for _ in texts])
+
+    first = _upload(client, auth_headers, "laporan.txt", "isi laporan pertama".encode(), "text/plain")
+    _store_on_disk(first, b"isi laporan pertama")
+    second = _upload(client, auth_headers, "keputusan.pdf", PDF_VALID, "application/pdf")
+    _store_on_disk(second, PDF_VALID)
+
+    # Documents enter session history only through message attachments: send
+    # one message per document, then a bare question.
+    client.post(
+        "/chat",
+        headers=auth_headers,
+        json={"session_id": session_id, "message": "pelajari yang ini", "attachments": [first["stored_name"]]},
+    )
+    client.post(
+        "/chat",
+        headers=auth_headers,
+        json={"session_id": session_id, "message": "dan yang ini", "attachments": [second["stored_name"]]},
+    )
+    client.post(
+        "/chat",
+        headers=auth_headers,
+        json={"session_id": session_id, "message": "pelajari dokumen ini"},
+    )
+
+    assert captured["document_filenames"] == [second["stored_name"], first["stored_name"]]  # newest first
+
+    # The ingested chunks land in the shared corpus; clean them up.
+    session = SessionLocal()
+    session.query(Document).filter(
+        Document.filename.in_([first["stored_name"], second["stored_name"]])
+    ).delete(synchronize_session=False)
+    session.commit()
+    session.close()
+    (UPLOAD_DIR / first["stored_name"]).unlink(missing_ok=True)
+    (UPLOAD_DIR / second["stored_name"]).unlink(missing_ok=True)

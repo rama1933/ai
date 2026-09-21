@@ -70,7 +70,7 @@ def test_tool_call_result_is_fed_back_and_answer_returned(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
             text="[policy.pdf] retensi 5 tahun", sources=[SourceRef(filename="policy.pdf", score=0.9)]
         ),
     )
@@ -110,7 +110,7 @@ def test_iteration_cap_stops_a_tool_call_loop(monkeypatch):
     loop_reply = _reply(tool_calls=[{"function": {"name": "rag_search", "arguments": {"query": "x"}}}])
     _mock_ollama(monkeypatch, [loop_reply] * 10)
     monkeypatch.setattr(
-        registry, "dispatch", lambda name, arguments, db, image_paths: registry.ToolOutcome(text="nothing")
+        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="nothing")
     )
 
     result = orchestrator.run_agent(db=None, message="loop", history=[])
@@ -130,7 +130,7 @@ def test_tool_call_written_as_content_is_dispatched_not_leaked(monkeypatch):
     dispatched: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths: (
+        lambda name, arguments, db, image_paths, document_filenames=None: (
             dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
         ),
     )
@@ -180,7 +180,7 @@ def test_tool_used_records_the_first_tool_of_a_multi_tool_turn(monkeypatch):
             _reply(content="Selesai."),
         ],
     )
-    monkeypatch.setattr(registry, "dispatch", lambda name, arguments, db, image_paths: registry.ToolOutcome(text="ok"))
+    monkeypatch.setattr(registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="ok"))
 
     result = orchestrator.run_agent(db=None, message="dua tool", history=[])
 
@@ -232,7 +232,7 @@ def test_stream_tool_turn_yields_tool_sources_then_deltas(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
             text="[policy.pdf] retensi 5 tahun", sources=[SourceRef(filename="policy.pdf", score=0.9)]
         ),
     )
@@ -263,7 +263,7 @@ def test_stream_tool_call_blob_is_never_streamed_as_text(monkeypatch):
     dispatched: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths: (
+        lambda name, arguments, db, image_paths, document_filenames=None: (
             dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
         ),
     )
@@ -299,7 +299,7 @@ def test_stream_exhausted_loop_yields_give_up_done(monkeypatch):
     ]
     _mock_ollama_chunks(monkeypatch, [loop] * 10)
     monkeypatch.setattr(
-        registry, "dispatch", lambda name, arguments, db, image_paths: registry.ToolOutcome(text="nothing")
+        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="nothing")
     )
 
     events = list(orchestrator.stream_agent(db=None, message="loop", history=[]))
@@ -308,3 +308,26 @@ def test_stream_exhausted_loop_yields_give_up_done(monkeypatch):
     assert done["type"] == "done"
     assert "tidak dapat" in done["answer"].lower() or "could not" in done["answer"].lower()
     assert done["tool_used"] == "rag_search"
+
+
+def test_stream_agent_threads_document_filenames_to_dispatch(monkeypatch):
+    tool_turn = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "rag_search", "arguments": {"query": "retensi"}}}],
+        }
+    ]
+    answer_turn = [{"role": "assistant", "content": "selesai."}]
+    _mock_ollama_chunks(monkeypatch, [tool_turn, answer_turn])
+    captured = {}
+
+    def capture_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        captured["document_filenames"] = document_filenames
+        return registry.ToolOutcome(text="ok")
+
+    monkeypatch.setattr(registry, "dispatch", capture_dispatch)
+
+    list(orchestrator.stream_agent(db=None, message="tanya", history=[], document_filenames=["abc-laporan.pdf"]))
+
+    assert captured["document_filenames"] == ["abc-laporan.pdf"]

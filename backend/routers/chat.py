@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from agent.orchestrator import AgentError, run_agent, stream_agent
@@ -86,20 +87,58 @@ def _resolve_attachments(names: list[str]) -> list[ResolvedAttachment]:
     return resolved
 
 
+SESSION_DOC_LIMIT = 10
+
+
+def _session_document_filenames(
+    db: Session, session_id: str, resolved: list[ResolvedAttachment]
+) -> list[str]:
+    """Document files this conversation references, newest first, capped.
+
+    Server-derived context, the same principle as image_paths for OCR: the
+    model never names a file. Retrieval scopes to these so "pelajari dokumen
+    ini" anchors to the papers the caller actually brought to this
+    conversation instead of to whichever chunk of the shared corpus happens
+    to clear the score floor.
+    """
+    names: list[str] = []
+    for r in resolved:
+        if r.kind == "document" and r.stored_name not in names:
+            names.append(r.stored_name)
+
+    rows = (
+        db.query(ChatHistory.attachments)
+        .filter(
+            ChatHistory.session_id == session_id,
+            ChatHistory.role == "user",
+            func.jsonb_array_length(ChatHistory.attachments) > 0,
+        )
+        .order_by(ChatHistory.id.desc())
+        .limit(50)
+        .all()
+    )
+    for (attachments,) in rows:
+        for a in attachments or []:
+            if isinstance(a, dict) and a.get("kind") == "document" and a.get("stored_name") not in names:
+                names.append(a["stored_name"])
+    return names[:SESSION_DOC_LIMIT]
+
+
 def _prepare_turn(
     db: Session,
     payload: ChatRequest,
     user: User,
     truncate_after_id: int | None = None,
-) -> tuple[list[ResolvedAttachment], list[dict], int]:
+) -> tuple[list[ResolvedAttachment], list[dict], int, list[str]]:
     """Shared preamble of both chat endpoints: attachment resolution, ownership,
     truncation, the history window, and the user-row insert.
 
-    Returns the resolved attachments, the history window, and the user row's id
+    Returns the resolved attachments, the history window, the user row's id
     (the streaming endpoint echoes it back so the client can address this turn
-    for regenerate/edit). The caller owns the commit. POST /chat lets get_db do
-    it after the response; the streaming endpoint must commit before it returns
-    the StreamingResponse, because its dependency session is closed by then.
+    for regenerate/edit), and the session's document filenames for retrieval
+    scoping. The caller owns the commit. POST /chat lets get_db do it after the
+    response; the streaming endpoint must commit before it returns the
+    StreamingResponse, because its dependency session is closed by then.
     """
     resolved = _resolve_attachments(payload.attachments)
     session = get_or_create_session(db, payload.session_id, user)
@@ -130,7 +169,8 @@ def _prepare_turn(
     )
     db.add(user_row)
     db.flush()
-    return resolved, history, user_row.id
+    session_docs = _session_document_filenames(db, payload.session_id, resolved)
+    return resolved, history, user_row.id, session_docs
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -139,11 +179,13 @@ def chat(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
-    resolved, history, _ = _prepare_turn(db, payload, user)
+    resolved, history, _, session_docs = _prepare_turn(db, payload, user)
     image_paths = [r.path for r in resolved if r.kind == "image"]
 
     try:
-        result = run_agent(db=db, message=payload.message, history=history, image_paths=image_paths)
+        result = run_agent(
+            db=db, message=payload.message, history=history, image_paths=image_paths, document_filenames=session_docs
+        )
     except AgentError as exc:
         raise HTTPException(status_code=503, detail=f"local LLM unavailable: {exc}") from exc
 
@@ -174,7 +216,9 @@ def chat_stream(
     # sent, so the request's db session is closed by the time the generator runs.
     session_id = payload.session_id
     message = payload.message
-    resolved, history, user_row_id = _prepare_turn(db, payload, user, truncate_after_id=payload.truncate_after_id)
+    resolved, history, user_row_id, session_docs = _prepare_turn(
+        db, payload, user, truncate_after_id=payload.truncate_after_id
+    )
     image_paths = [r.path for r in resolved if r.kind == "image"]
     db.commit()  # the pre-stream work is one unit; the generator opens its own session
 
@@ -183,7 +227,13 @@ def chat_stream(
         parts: list[str] = []
         persisted = False
         try:
-            for event in stream_agent(db=gen_db, message=message, history=history, image_paths=image_paths):
+            for event in stream_agent(
+                db=gen_db,
+                message=message,
+                history=history,
+                image_paths=image_paths,
+                document_filenames=session_docs,
+            ):
                 if event["type"] == "delta":
                     parts.append(event["text"])
                 elif event["type"] == "done":

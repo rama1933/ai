@@ -70,15 +70,28 @@ def _wrap(payload: str) -> str:
     return f"{UNTRUSTED_HEADER}\n{payload}\n{UNTRUSTED_FOOTER}"
 
 
-def dispatch(name: str, arguments: dict, db: Session | None, image_paths: list[str] | None) -> ToolOutcome:
+def dispatch(
+    name: str,
+    arguments: dict,
+    db: Session | None,
+    image_paths: list[str] | None,
+    document_filenames: list[str] | None = None,
+) -> ToolOutcome:
     """Run one tool call. Failures come back as text so the model can recover.
 
-    image_paths carries the caller's attached images, resolved from the
-    authenticated request -- never a name the model chose; the tool schemas
-    deliberately expose no file parameter.
+    image_paths carries the caller's attached images and document_filenames the
+    documents its session references -- both resolved from the authenticated
+    request, never names the model chose; the tool schemas deliberately expose
+    no file parameter.
     """
     if name == "rag_search":
-        hits = rag_search(db, str(arguments.get("query", "")))
+        # With session documents on record, scope retrieval to them and read a
+        # little deeper: "pelajari dokumen ini" must anchor to those files, not
+        # to whichever chunk of the shared corpus happens to score 0.65.
+        filenames = document_filenames or None
+        hits = rag_search(
+            db, str(arguments.get("query", "")), top_k=6 if filenames else 4, filenames=filenames
+        )
         if not hits:
             return ToolOutcome(text="No matching document found in the knowledge base. (tidak ditemukan)")
         body = "\n\n".join(f"[{h.filename}] {h.content}" for h in hits)

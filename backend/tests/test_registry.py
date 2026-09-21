@@ -15,7 +15,7 @@ def test_tool_schemas_expose_three_tools():
 def test_dispatch_rag_search_wraps_results_as_untrusted(monkeypatch):
     monkeypatch.setattr(
         registry, "rag_search",
-        lambda db, query, top_k=4: [RagHit(filename="policy.pdf", content="retensi 5 tahun", score=0.91)],
+        lambda db, query, top_k=4, filenames=None: [RagHit(filename="policy.pdf", content="retensi 5 tahun", score=0.91)],
     )
     outcome = registry.dispatch("rag_search", {"query": "retensi"}, db=None, image_paths=[])
 
@@ -26,7 +26,7 @@ def test_dispatch_rag_search_wraps_results_as_untrusted(monkeypatch):
 
 
 def test_dispatch_rag_search_reports_no_match(monkeypatch):
-    monkeypatch.setattr(registry, "rag_search", lambda db, query, top_k=4: [])
+    monkeypatch.setattr(registry, "rag_search", lambda db, query, top_k=4, filenames=None: [])
     outcome = registry.dispatch("rag_search", {"query": "apa pun"}, db=None, image_paths=[])
     assert "tidak ditemukan" in outcome.text.lower() or "no matching" in outcome.text.lower()
     assert outcome.sources == []
@@ -65,3 +65,23 @@ def test_dispatch_sql_query_returns_rejection_as_text_not_exception(monkeypatch)
 def test_dispatch_unknown_tool_returns_error_text():
     outcome = registry.dispatch("rm_rf", {}, db=None, image_paths=[])
     assert "unknown tool" in outcome.text.lower()
+
+
+def test_dispatch_scopes_rag_search_to_session_documents(monkeypatch):
+    """document_filenames rides in from the session like image_paths does for
+    OCR -- server-derived, never chosen by the model."""
+    seen = {}
+    monkeypatch.setattr(
+        registry, "rag_search", lambda db, query, top_k=4, filenames=None: seen.update(
+            query=query, top_k=top_k, filenames=filenames
+        ) or []
+    )
+
+    outcome = registry.dispatch(
+        "rag_search", {"query": "pelajari dokumen ini"}, db=None,
+        image_paths=[], document_filenames=["abc-laporan.pdf"],
+    )
+
+    assert seen["filenames"] == ["abc-laporan.pdf"]
+    assert seen["top_k"] == 6  # scoped reads go a little deeper
+    assert "tidak ditemukan" in outcome.text.lower() or "no matching" in outcome.text.lower()

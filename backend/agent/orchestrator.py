@@ -151,6 +151,7 @@ def stream_agent(
     message: str,
     history: list[dict],
     image_paths: list[str] | None = None,
+    document_filenames: list[str] | None = None,
 ) -> Iterator[dict]:
     """Ollama native tool-calling loop, as a generator of typed events.
 
@@ -215,7 +216,13 @@ def stream_agent(
                     arguments = {}
 
             yield {"type": "tool", "name": name}
-            outcome = registry.dispatch(name, arguments, db=db, image_paths=image_paths or [])
+            outcome = registry.dispatch(
+                name,
+                arguments,
+                db=db,
+                image_paths=image_paths or [],
+                document_filenames=document_filenames,
+            )
             if tool_used is None:  # the agent's first choice, stable for callers and tests
                 tool_used = name
             sources.extend(outcome.sources)
@@ -231,9 +238,16 @@ def run_agent(
     message: str,
     history: list[dict],
     image_paths: list[str] | None = None,
+    document_filenames: list[str] | None = None,
 ) -> AgentResult:
     """Blocking form of stream_agent: drain the events, return the done payload."""
-    for event in stream_agent(db=db, message=message, history=history, image_paths=image_paths):
+    for event in stream_agent(
+        db=db,
+        message=message,
+        history=history,
+        image_paths=image_paths,
+        document_filenames=document_filenames,
+    ):
         if event["type"] == "done":
             return AgentResult(answer=event["answer"], tool_used=event["tool_used"], sources=event["sources"])
     raise AgentError("agent stream ended without a done event")
