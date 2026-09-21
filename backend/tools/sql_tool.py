@@ -9,6 +9,17 @@ from database import get_readonly_engine
 TABLE_REF = re.compile(r"\b(?:from|join|into|update)\s+([a-zA-Z_][\w.]*)", re.IGNORECASE)
 COMMENT = re.compile(r"(--[^\n]*|/\*.*?\*/)", re.DOTALL)
 
+# A statement that starts with WITH and only later says SELECT can still write:
+# data-modifying CTEs (`WITH d AS (DELETE FROM documents) SELECT 1`) and
+# SELECT ... INTO. Track string literals so a keyword inside a string is ignored,
+# and match whole words only, so identifiers such as `update_time` survive.
+STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+WRITE_KEYWORD = re.compile(
+    r"\b(?:insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|"
+    r"copy|call|do|vacuum|reindex|refresh|comment|security|policy|into)\b",
+    re.IGNORECASE,
+)
+
 
 class SqlRejected(ValueError):
     """The generated SQL is not something we are willing to execute."""
@@ -26,6 +37,15 @@ def _validate(query: str) -> str:
     for referenced in TABLE_REF.findall(stripped):
         if referenced.lower() not in allowed:
             raise SqlRejected(f"table {referenced!r} is not allowed; allowed: {sorted(allowed)}")
+
+    # Fast rejection layer only: the rag_readonly role (no write grants) plus the
+    # statement timeout remain the real boundary, this just fails early with a
+    # clear error instead of leaning on PostgreSQL to refuse the write.
+    match = WRITE_KEYWORD.search(STRING_LITERAL.sub("''", stripped))
+    if match:
+        raise SqlRejected(
+            f"{match.group(0).upper()} is not allowed; only read-only SELECT statements are permitted"
+        )
     return stripped
 
 

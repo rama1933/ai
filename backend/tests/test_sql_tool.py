@@ -31,6 +31,27 @@ def test_sql_query_rejects_pg_catalog_probing():
         sql_tool.sql_query("SELECT * FROM pg_shadow")
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "WITH documents AS (DELETE FROM documents RETURNING *) SELECT * FROM documents",
+        "WITH d AS (DELETE FROM documents) SELECT 1",
+        "WITH x AS (INSERT INTO documents(filename,content) VALUES('a','b') RETURNING *) SELECT * FROM x",
+        "WITH d AS (UPDATE documents SET content = 'x' RETURNING *) SELECT * FROM d",
+        "SELECT * INTO newtable FROM documents",
+    ],
+)
+def test_sql_query_rejects_data_modifying_ctes(query):
+    with pytest.raises(sql_tool.SqlRejected):
+        sql_tool.sql_query(query)
+
+
+def test_sql_query_allows_keyword_substrings():
+    rows = sql_tool.sql_query("SELECT count(*) AS update_count FROM chat_history")
+    assert isinstance(rows, list)
+    assert "update_count" in rows[0]
+
+
 def test_sql_query_returns_rows_as_dicts():
     rows = sql_tool.sql_query("SELECT count(*) AS total FROM chat_history")
     assert isinstance(rows, list)
