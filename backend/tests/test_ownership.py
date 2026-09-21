@@ -193,6 +193,20 @@ def test_sql_tool_still_reaches_documents():
     assert isinstance(sql_query("SELECT filename FROM documents LIMIT 1"), list)
 
 
+def test_rag_readonly_cannot_read_chat_history():
+    """The role's grant is the boundary; the SQL text check is a fail-early layer.
+
+    Decision 7 removed the last legitimate reason for the SQL tool's role to read
+    conversations, and `FROM "chat_history"` showed the text check alone can be walked
+    past. This asserts the privilege itself is gone, so a future edit that re-adds it
+    -- in db/schema.sql or by hand -- fails here rather than in production.
+    """
+    for table, expected in (("chat_history", "f"), ("documents", "t")):
+        result = _psql("-tAc", f"SELECT has_table_privilege('rag_readonly','{table}','SELECT')")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected, f"rag_readonly SELECT on {table}: {result.stdout.strip()}"
+
+
 def test_upload_records_uploader(client, two_users, tmp_path, monkeypatch):
     """POST /upload is the path most uploads take, so provenance is checked there
     rather than only on POST /documents."""

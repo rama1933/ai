@@ -6,7 +6,12 @@ from config import get_settings
 from database import get_readonly_engine
 
 # Any identifier appearing after FROM/JOIN/INTO/UPDATE must be in the allowlist.
-TABLE_REF = re.compile(r"\b(?:from|join|into|update)\s+([a-zA-Z_][\w.]*)", re.IGNORECASE)
+# The surrounding quotes are optional because PostgreSQL treats `FROM "chat_history"`
+# as the same table as `FROM chat_history`: a pattern that could not start at a quote
+# matched nothing there, so the allowlist ran over an empty list and the query went to
+# the database. The role grant is the real boundary (db/migrations/002), but this
+# layer must not be one pair of quote characters away from useless.
+TABLE_REF = re.compile(r'\b(?:from|join|into|update)\s+"?([a-zA-Z_][\w.]*)"?', re.IGNORECASE)
 COMMENT = re.compile(r"(--[^\n]*|/\*.*?\*/)", re.DOTALL)
 
 # A statement that starts with WITH and only later says SELECT can still write:

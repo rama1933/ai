@@ -45,8 +45,7 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "sql_query",
             "description": (
                 "Run one read-only SELECT against the application database. "
-                "Tables: chat_history(id, session_id, role, message, created_at), "
-                "documents(id, filename, content, doc_metadata, created_at). "
+                "Tables: documents(id, filename, content, doc_metadata, created_at). "
                 "Use this for counts, statistics, and other structured questions."
             ),
             "parameters": {

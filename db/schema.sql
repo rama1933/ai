@@ -58,7 +58,11 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rag_app;
 -- SQL-tool role: read-only, and deliberately NOT on users (password hashes).
 -- `sessions` is excluded too, and on purpose: it holds conversation metadata, and the
 -- SQL tool's reach is treated as LLM-visible. Do not add it to the GRANT below.
+-- `chat_history` is excluded for the same reason as `sessions` (SP0 Decision 7): the
+-- tool carries no user or session parameter, so any grant here is a read of every
+-- user's conversation. Do not add it back either. Validating the SQL text in
+-- tools/sql_tool.py is a fail-early convenience, not the boundary -- this grant is.
 GRANT CONNECT ON DATABASE agentic_rag TO rag_readonly;
 GRANT USAGE ON SCHEMA public TO rag_readonly;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rag_readonly;
-GRANT SELECT ON chat_history, documents TO rag_readonly;
+GRANT SELECT ON documents TO rag_readonly;
