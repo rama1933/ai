@@ -23,6 +23,8 @@ const {
   error,
   send,
   stop,
+  regenerate,
+  saveEdit,
   attach,
   removeAttachment,
   loadHistory,
@@ -224,7 +226,14 @@ const canSend = computed(
             </div>
           </div>
 
-          <MessageBubble v-for="(message, index) in messages" :key="index" :message="message" />
+          <MessageBubble
+            v-for="(message, index) in messages"
+            :key="index"
+            :message="message"
+            :index="index"
+            @regenerate="regenerate"
+            @save-edit="(i: number, text: string) => saveEdit(i, text)"
+          />
 
           <div v-if="isLoading" class="flex animate-fade-up gap-3">
             <div

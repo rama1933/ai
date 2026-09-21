@@ -204,6 +204,129 @@ describe('useChat', () => {
     expect(spy.mock.calls[0][0].session_id).toBe(spy.mock.calls[1][0].session_id)
   })
 
+  it('regenerate truncates from the user row and replaces exactly one assistant message', async () => {
+    const spy = streamOf([
+      { type: 'done', answer: 'jawaban pertama', tool_used: null, sources: [], user_row_id: 11, assistant_row_id: 12 },
+    ])
+
+    const chat = useChat()
+    chat.input.value = 'tanya awal'
+    await chat.send()
+
+    // ids from the done event landed on both messages
+    expect(chat.messages.value[0].id).toBe(11)
+    expect(chat.messages.value[1].id).toBe(12)
+
+    spy.mockImplementation(function regenerateStream() {
+      return (async function* generated() {
+        yield {
+          type: 'done',
+          answer: 'jawaban baru',
+          tool_used: null,
+          sources: [],
+          user_row_id: 11,
+          assistant_row_id: 30,
+        }
+      })()
+    } as unknown as typeof api.streamMessage)
+
+    await chat.regenerate(1)
+
+    expect(spy.mock.calls[1][0].truncate_after_id).toBe(11)
+    expect(spy.mock.calls[1][0].message).toBe('tanya awal')
+    expect(chat.messages.value).toHaveLength(2)
+    expect(chat.messages.value[1].content).toBe('jawaban baru')
+    expect(chat.messages.value[1].id).toBe(30)
+  })
+
+  it('edit truncates the tail, re-sends with attachments, and drops later turns', async () => {
+    const spy = vi.spyOn(api, 'streamMessage')
+    const turn = (answer: string, userId: number, assistantId: number) =>
+      function oneTurn() {
+        return (async function* generated() {
+          yield {
+            type: 'done' as const,
+            answer,
+            tool_used: null,
+            sources: [],
+            user_row_id: userId,
+            assistant_row_id: assistantId,
+          }
+        })()
+      }
+    spy.mockImplementationOnce(turn('satu', 11, 12))
+    spy.mockImplementationOnce(turn('dua', 13, 14))
+    spy.mockImplementationOnce(turn('dua yang diedit', 20, 21))
+
+    const chat = useChat()
+    chat.input.value = 'pesan satu'
+    await chat.send()
+    chat.input.value = 'pesan dua'
+    await chat.send()
+    expect(chat.messages.value).toHaveLength(4)
+
+    await chat.saveEdit(2, 'pesan dua yang diedit')
+
+    // truncate from the row BEFORE the edited one (the first assistant, id 12)
+    expect(spy.mock.calls[2][0].truncate_after_id).toBe(12)
+    expect(spy.mock.calls[2][0].message).toBe('pesan dua yang diedit')
+    expect(chat.messages.value).toHaveLength(4)
+    expect(chat.messages.value[2].content).toBe('pesan dua yang diedit')
+    expect(chat.messages.value[3].content).toBe('dua yang diedit')
+  })
+
+  it('edit re-sends with the original attachments preserved', async () => {
+    vi.spyOn(api, 'uploadFile').mockResolvedValue({
+      filename: 'abc-struk.png',
+      status: 'stored',
+      kind: 'image',
+      stored_name: 'abc-struk.png',
+      display_name: 'struk.png',
+      mime: 'image/png',
+      size: 1,
+    })
+    const spy = streamOf([
+      { type: 'done', answer: 'ok', tool_used: null, sources: [], user_row_id: 11, assistant_row_id: 12 },
+    ])
+
+    const chat = useChat()
+    await chat.attach([new File(['x'], 'struk.png', { type: 'image/png' })])
+    chat.input.value = 'lihat struk'
+    await chat.send()
+
+    await chat.saveEdit(0, 'lihat struk sekali lagi')
+
+    expect(spy.mock.calls[1][0].message).toBe('lihat struk sekali lagi')
+    expect(spy.mock.calls[1][0].attachments).toEqual(['abc-struk.png'])
+  })
+
+  it('regenerate and edit are no-ops while streaming', async () => {
+    let release: (() => void) | undefined
+    vi.spyOn(api, 'streamMessage').mockImplementation(function hangingStream() {
+      return (async function* generated() {
+        yield { type: 'delta', text: 'sebagian' }
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        yield { type: 'done', answer: 'sebagian', tool_used: null, sources: [] }
+      })()
+    } as unknown as typeof api.streamMessage)
+
+    const chat = useChat()
+    chat.input.value = 'tanya'
+    const running = chat.send()
+    await vi.waitFor(() => expect(chat.isStreaming.value).toBe(true))
+
+    await chat.regenerate(1)
+    await chat.saveEdit(0, 'diubah')
+
+    expect(chat.messages.value[0].content).toBe('tanya') // edit did not run
+    expect(chat.messages.value[1].content).toBe('sebagian') // regenerate did not run
+
+    release?.()
+    await running
+  })
+
   it('treats a 404 from the history endpoint as an empty conversation', async () => {
     // A session id is generated client-side, so a brand-new conversation has no row
     // until the first POST /chat and GET /chat/history answers 404. That is the

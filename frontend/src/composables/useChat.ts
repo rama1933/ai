@@ -12,6 +12,9 @@ import { useAttachments } from './useAttachments'
 import { useSessions } from './useSessions'
 
 export interface ChatMessage {
+  /** The chat_history row id, once the turn is persisted. Optimistic messages
+   * carry null, and their actions stay disabled until the turn completes. */
+  id: number | null
   role: 'user' | 'assistant'
   content: string
   attachments?: AttachmentRef[]
@@ -22,7 +25,7 @@ export interface ChatMessage {
 export function useChat() {
   // One active conversation across the app; the sidebar owns switching.
   const { activeId } = useSessions()
-  const { pending, hasUploading, readyNames, add, remove, clear, adopt } = useAttachments()
+  const { pending, hasUploading, add, remove, clear, adopt } = useAttachments()
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
   const isLoading = ref(false) // request in flight, no token received yet
@@ -45,6 +48,7 @@ export function useChat() {
     try {
       const history = await api.fetchHistory(activeId.value)
       messages.value = history.map((item) => ({
+        id: item.id,
         role: item.role === 'user' ? 'user' : 'assistant',
         content: item.message,
         attachments: item.attachments ?? [],
@@ -72,10 +76,7 @@ export function useChat() {
   async function attach(files: File[]): Promise<void> {
     error.value = null
     await add(files, (displayName) => {
-      messages.value.push({
-        role: 'assistant',
-        content: `Dokumen **${displayName}** sudah diproses dan masuk ke knowledge base.`,
-      })
+      messages.value.push(emptyMessage('assistant', `Dokumen **${displayName}** sudah diproses dan masuk ke knowledge base.`))
     })
   }
 
@@ -92,14 +93,29 @@ export function useChat() {
       assistant.content = event.answer
       assistant.toolUsed = event.tool_used
       assistant.sources = event.sources
+      assistant.id = event.assistant_row_id ?? null
+      const index = messages.value.indexOf(assistant)
+      const user = index > 0 ? messages.value[index - 1] : undefined
+      if (user && user.role === 'user' && event.user_row_id) user.id = event.user_row_id
     }
   }
 
   /** One stream attempt. Returns the failure, or null when it finished cleanly. */
-  async function consume(sessionId: string, text: string, assistant: ChatMessage): Promise<unknown> {
+  async function consume(
+    sessionId: string,
+    text: string,
+    attachments: AttachmentRef[],
+    assistant: ChatMessage,
+    truncateAfterId: number | undefined,
+  ): Promise<unknown> {
     try {
       for await (const event of api.streamMessage(
-        { session_id: sessionId, message: text, attachments: readyNames.value },
+        {
+          session_id: sessionId,
+          message: text,
+          attachments: attachments.map((a) => a.stored_name),
+          ...(truncateAfterId !== undefined ? { truncate_after_id: truncateAfterId } : {}),
+        },
         controller!.signal,
       )) {
         // First byte arrived: swap the typing dots for the growing answer.
@@ -115,6 +131,37 @@ export function useChat() {
     } catch (err) {
       if ((err as Error | null)?.name === 'AbortError') return null // stop() is deliberate
       return err
+    }
+  }
+
+  /** Shared streaming tail over the last message in the list. */
+  async function runStream(
+    text: string,
+    attachments: AttachmentRef[],
+    truncateAfterId: number | undefined,
+  ): Promise<void> {
+    const assistant = messages.value[messages.value.length - 1]
+    if (!assistant) return
+    isLoading.value = true
+    controller = new AbortController()
+    try {
+      let failure = await consume(resolveSessionId(), text, attachments, assistant, truncateAfterId)
+      if (failure && isNotFound(failure)) {
+        // The stored id is unknown or belongs to another account -- stale
+        // localStorage after a logout on a shared browser. A fresh conversation
+        // fixes it; retrying is cheaper than a dead-end "unknown session".
+        activeId.value = null
+        failure = await consume(resolveSessionId(), text, attachments, assistant, truncateAfterId)
+      }
+      if (failure) {
+        error.value = describeError(failure)
+        // An empty failed bubble is noise; the banner tells the story.
+        if (!assistant.content) messages.value.pop()
+      }
+    } finally {
+      isLoading.value = false
+      isStreaming.value = false
+      controller = null
     }
   }
 
@@ -134,39 +181,58 @@ export function useChat() {
         previewUrl: item.previewUrl,
       }))
     adopt(attachments.map((a) => a.previewUrl)) // the optimistic bubble owns them now
-    messages.value.push({ role: 'user', content: text, attachments })
-    messages.value.push({ role: 'assistant', content: '' })
-    // Index the reactive array rather than keeping the raw object pushed into
-    // it: mutations on the raw object bypass the proxy and never re-render.
-    const assistant = messages.value[messages.value.length - 1]
+    messages.value.push(emptyMessage('user', text, attachments))
+    messages.value.push(emptyMessage('assistant', ''))
     input.value = ''
-    isLoading.value = true
-    controller = new AbortController()
+    await runStream(text, attachments, undefined)
+  }
 
-    try {
-      let failure = await consume(resolveSessionId(), text, assistant)
-      if (failure && isNotFound(failure)) {
-        // The stored id is unknown or belongs to another account -- stale
-        // localStorage after a logout on a shared browser. A fresh conversation
-        // fixes it; retrying is cheaper than a dead-end "unknown session".
-        activeId.value = null
-        failure = await consume(resolveSessionId(), text, assistant)
-      }
-      if (failure) {
-        error.value = describeError(failure)
-        // An empty failed bubble is noise; the banner tells the story.
-        if (!assistant.content) messages.value.pop()
-      }
-    } finally {
-      isLoading.value = false
-      isStreaming.value = false
-      controller = null
-    }
+  /**
+   * Re-run the user turn above an assistant answer. truncate_after_id is that
+   * user row's id, so the server drops the answer (and anything after it) and
+   * the client mirrors exactly that before streaming into a fresh bubble.
+   */
+  async function regenerate(assistantIndex: number): Promise<void> {
+    const user = messages.value[assistantIndex - 1]
+    if (!user || user.role !== 'user' || !user.id) return
+    if (isLoading.value || isStreaming.value || hasUploading.value) return
+
+    error.value = null
+    messages.value.splice(assistantIndex)
+    messages.value.push(emptyMessage('assistant', ''))
+    await runStream(user.content, user.attachments ?? [], user.id)
+  }
+
+  /**
+   * Save an edited user message: everything from the row before it disappears
+   * -- that is this milestone's destructive-edit semantics -- and the new text
+   * streams a fresh answer. 0 as the truncation point means "nothing before
+   * this row", i.e. editing the very first message.
+   */
+  async function saveEdit(userIndex: number, text: string): Promise<void> {
+    const user = messages.value[userIndex]
+    const trimmed = text.trim()
+    if (!user || user.role !== 'user' || !trimmed) return
+    if (isLoading.value || isStreaming.value || hasUploading.value) return
+
+    error.value = null
+    const previous = userIndex > 0 ? messages.value[userIndex - 1] : undefined
+    const truncateAfterId = previous?.id ?? 0
+    user.content = trimmed
+    user.id = null // the row is rewritten on save; disabled until it lands again
+    messages.value.splice(userIndex + 1)
+    messages.value.push(emptyMessage('assistant', ''))
+    const storedOnly = (user.attachments ?? []).map(({ previewUrl: _drop, ...rest }) => rest)
+    await runStream(trimmed, storedOnly, truncateAfterId)
   }
 
   /** Abort the stream. The server persists the truncated answer in its finally. */
   function stop(): void {
     controller?.abort()
+  }
+
+  function emptyMessage(role: 'user' | 'assistant', content: string, attachments?: AttachmentRef[]): ChatMessage {
+    return { id: null, role, content, attachments }
   }
 
   return {
@@ -180,6 +246,8 @@ export function useChat() {
     error,
     send,
     stop,
+    regenerate,
+    saveEdit,
     attach,
     removeAttachment: remove,
     loadHistory,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 import type { AttachmentRef } from '../services/api'
@@ -9,8 +9,10 @@ import type { ChatMessage } from '../composables/useChat'
 import { useAttachments } from '../composables/useAttachments'
 import AppIcon from './AppIcon.vue'
 import AttachmentChip from './AttachmentChip.vue'
+import MessageActions from './MessageActions.vue'
 
-const props = defineProps<{ message: ChatMessage }>()
+const props = defineProps<{ message: ChatMessage; index: number }>()
+const emit = defineEmits<{ regenerate: [index: number]; saveEdit: [index: number, text: string] }>()
 
 const { objectUrl } = useAttachments()
 
@@ -20,6 +22,29 @@ const md = new MarkdownIt({ linkify: true, breaks: true })
 const rendered = computed(() => DOMPurify.sanitize(md.render(props.message.content)))
 const isUser = computed(() => props.message.role === 'user')
 
+// Edit mode: the bubble becomes a textarea seeded with the current text;
+// saving hands the new text up to useChat, cancel restores.
+const editing = ref(false)
+const editText = ref('')
+
+function startEdit(): void {
+  editText.value = props.message.content
+  editing.value = true
+  void nextTick(() => editInput.value?.focus())
+}
+
+function onEditKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') editing.value = false
+  else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) save()
+}
+
+function save(): void {
+  const text = editText.value.trim()
+  editing.value = false
+  if (!text || text === props.message.content) return
+  emit('saveEdit', props.index, text)
+}
+
 const attachments = computed(() => props.message.attachments ?? [])
 const imageAttachments = computed(() => attachments.value.filter((a) => a.kind === 'image'))
 const documentAttachments = computed(() => attachments.value.filter((a) => a.kind !== 'image'))
@@ -28,6 +53,7 @@ const documentAttachments = computed(() => attachments.value.filter((a) => a.kin
 // when there is no local preview: an optimistic bubble shows its own File and
 // the server row does not exist yet to serve the real one.
 const thumbs = ref<Record<string, string | null>>({})
+const editInput = ref<HTMLTextAreaElement | null>(null)
 onMounted(async () => {
   for (const attachment of imageAttachments.value) {
     if (attachment.previewUrl) continue
@@ -87,7 +113,7 @@ function shortName(filename: string): string {
 </script>
 
 <template>
-  <div class="flex animate-fade-up gap-3" :class="isUser ? 'flex-row-reverse' : 'flex-row'">
+  <div class="group/bubble flex animate-fade-up gap-3" :class="isUser ? 'flex-row-reverse' : 'flex-row'">
     <div
       class="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full"
       :class="
@@ -141,11 +167,51 @@ function shortName(filename: string): string {
       </div>
 
       <div
+        v-if="!editing"
         class="rounded-bubble px-4 py-3 shadow-card"
         :class="isUser ? 'bg-primary text-primary-fg' : 'bg-surface text-fg ring-1 ring-border'"
       >
         <div class="md-body" v-html="rendered" />
       </div>
+      <div
+        v-else
+        class="w-full min-w-[16rem] rounded-bubble bg-surface p-2 shadow-card ring-1 ring-primary/60"
+      >
+        <label class="sr-only" :for="`edit-${index}`">Edit pesan</label>
+        <textarea
+          :id="`edit-${index}`"
+          ref="editInput"
+          v-model="editText"
+          rows="3"
+          class="w-full resize-none rounded-lg bg-bg px-3 py-2 text-sm leading-relaxed text-fg ring-1 ring-border focus:outline-none focus:ring-primary/60"
+          @keydown="onEditKeydown"
+        ></textarea>
+        <div class="mt-1.5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg px-3 py-1.5 text-xs text-subtle transition-colors hover:bg-elevated hover:text-fg"
+            @click="editing = false"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-fg transition-all hover:brightness-110 active:scale-[0.98]"
+            @click="save"
+          >
+            Simpan &amp; kirim ulang
+          </button>
+        </div>
+      </div>
+
+      <MessageActions
+        v-if="!editing"
+        :text="message.content"
+        :role="message.role"
+        :disabled="message.id === null"
+        @regenerate="emit('regenerate', index)"
+        @edit="startEdit"
+      />
 
       <div v-if="tool || sources.length" class="flex flex-wrap items-center gap-1.5">
         <span

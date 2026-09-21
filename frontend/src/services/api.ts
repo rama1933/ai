@@ -37,12 +37,21 @@ export interface SessionSummary {
   updated_at: string
 }
 
-/** Mirrors the backend's stream_agent events plus the transport-only error type. */
+/** Mirrors the backend's stream_agent events plus the transport-only error type.
+ * The router enriches done with the persisted row ids so the client can
+ * address this turn for regenerate/edit. */
 export type StreamEvent =
   | { type: 'tool'; name: string }
   | { type: 'sources'; sources: SourceRef[] }
   | { type: 'delta'; text: string }
-  | { type: 'done'; answer: string; tool_used: string | null; sources: SourceRef[] }
+  | {
+      type: 'done'
+      answer: string
+      tool_used: string | null
+      sources: SourceRef[]
+      user_row_id?: number
+      assistant_row_id?: number
+    }
   | { type: 'error'; detail: string }
 
 export interface StreamChatBody {

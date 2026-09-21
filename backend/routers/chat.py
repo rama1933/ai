@@ -91,13 +91,15 @@ def _prepare_turn(
     payload: ChatRequest,
     user: User,
     truncate_after_id: int | None = None,
-) -> tuple[list[ResolvedAttachment], list[dict]]:
+) -> tuple[list[ResolvedAttachment], list[dict], int]:
     """Shared preamble of both chat endpoints: attachment resolution, ownership,
     truncation, the history window, and the user-row insert.
 
-    The caller owns the commit. POST /chat lets get_db do it after the response;
-    the streaming endpoint must commit before it returns the StreamingResponse,
-    because its dependency session is closed by then.
+    Returns the resolved attachments, the history window, and the user row's id
+    (the streaming endpoint echoes it back so the client can address this turn
+    for regenerate/edit). The caller owns the commit. POST /chat lets get_db do
+    it after the response; the streaming endpoint must commit before it returns
+    the StreamingResponse, because its dependency session is closed by then.
     """
     resolved = _resolve_attachments(payload.attachments)
     session = get_or_create_session(db, payload.session_id, user)
@@ -120,16 +122,15 @@ def _prepare_turn(
     )
     history = [{"role": row.role, "content": row.message} for row in reversed(prior)]
 
-    db.add(
-        ChatHistory(
-            session_id=payload.session_id,
-            role="user",
-            message=payload.message,
-            attachments=[r.ref() for r in resolved],
-        )
+    user_row = ChatHistory(
+        session_id=payload.session_id,
+        role="user",
+        message=payload.message,
+        attachments=[r.ref() for r in resolved],
     )
+    db.add(user_row)
     db.flush()
-    return resolved, history
+    return resolved, history, user_row.id
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -138,7 +139,7 @@ def chat(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
-    resolved, history = _prepare_turn(db, payload, user)
+    resolved, history, _ = _prepare_turn(db, payload, user)
     image_paths = [r.path for r in resolved if r.kind == "image"]
 
     try:
@@ -173,7 +174,7 @@ def chat_stream(
     # sent, so the request's db session is closed by the time the generator runs.
     session_id = payload.session_id
     message = payload.message
-    resolved, history = _prepare_turn(db, payload, user, truncate_after_id=payload.truncate_after_id)
+    resolved, history, user_row_id = _prepare_turn(db, payload, user, truncate_after_id=payload.truncate_after_id)
     image_paths = [r.path for r in resolved if r.kind == "image"]
     db.commit()  # the pre-stream work is one unit; the generator opens its own session
 
@@ -190,8 +191,11 @@ def chat_stream(
                     # carries any text the JSON-leak guard held back.
                     parts[:] = [event["answer"]]
                     persisted = True
-                    gen_db.add(ChatHistory(session_id=session_id, role="assistant", message=event["answer"]))
-                    gen_db.commit()
+                    assistant_row = ChatHistory(session_id=session_id, role="assistant", message=event["answer"])
+                    gen_db.add(assistant_row)
+                    gen_db.commit()  # expire_on_commit=False keeps the assigned id
+                    # The client addresses this turn by row id for regenerate/edit.
+                    event = {**event, "user_row_id": user_row_id, "assistant_row_id": assistant_row.id}
                 yield _sse(event)
         except AgentError as exc:
             # The response has already started, so this can no longer be a 503.
