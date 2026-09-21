@@ -14,11 +14,15 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         return []
 
     settings = get_settings()
-    response = httpx.post(
-        f"{settings.ollama_base_url}/api/embed",
-        json={"model": settings.ollama_embedding_model, "input": texts},
-        timeout=TIMEOUT_SECONDS,
-    )
+    try:
+        response = httpx.post(
+            f"{settings.ollama_base_url}/api/embed",
+            json={"model": settings.ollama_embedding_model, "input": texts},
+            timeout=TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        raise EmbeddingError(f"cannot reach Ollama at {settings.ollama_base_url}: {exc}") from exc
+
     if response.status_code != 200:
         raise EmbeddingError(f"ollama /api/embed returned {response.status_code}: {response.text[:200]}")
 

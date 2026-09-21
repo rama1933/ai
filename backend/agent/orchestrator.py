@@ -79,17 +79,23 @@ class AgentResult:
 
 def _chat(messages: list[dict]) -> dict:
     settings = get_settings()
-    response = httpx.post(
-        f"{settings.ollama_base_url}/api/chat",
-        json={
-            "model": settings.ollama_llm_model,
-            "messages": messages,
-            "tools": registry.TOOL_SCHEMAS,
-            "stream": False,
-            "options": {"temperature": settings.agent_temperature, "seed": settings.agent_seed},
-        },
-        timeout=TIMEOUT_SECONDS,
-    )
+    try:
+        response = httpx.post(
+            f"{settings.ollama_base_url}/api/chat",
+            json={
+                "model": settings.ollama_llm_model,
+                "messages": messages,
+                "tools": registry.TOOL_SCHEMAS,
+                "stream": False,
+                "options": {"temperature": settings.agent_temperature, "seed": settings.agent_seed},
+            },
+            timeout=TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        # A dead or unreachable Ollama is an availability problem, not a server bug.
+        # Surfacing it as AgentError lets the router answer 503 instead of 500.
+        raise AgentError(f"cannot reach Ollama at {settings.ollama_base_url}: {exc}") from exc
+
     if response.status_code != 200:
         raise AgentError(f"ollama /api/chat returned {response.status_code}: {response.text[:200]}")
     message = response.json().get("message")

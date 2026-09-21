@@ -8,14 +8,20 @@ from models import User
 
 @pytest.fixture
 def fresh_username() -> str:
-    return f"user-{uuid.uuid4().hex[:8]}"
+    return f"auth-user-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(autouse=True)
 def cleanup_users():
+    """Delete only the users THIS module created.
+
+    A broad 'user-%' pattern also matches the end-to-end matrix's 'user-<hex8>'
+    accounts, so a concurrent pytest process would delete the matrix's user
+    mid-run and collapse it with 401 "unknown user".
+    """
     yield
     session = SessionLocal()
-    session.query(User).filter(User.username.like("user-%")).delete(synchronize_session=False)
+    session.query(User).filter(User.username.like("auth-user-%")).delete(synchronize_session=False)
     session.commit()
     session.close()
 

@@ -92,6 +92,49 @@ def test_chat_passes_prior_history_to_the_agent(client, auth_headers, session_id
     assert captured["history"] == [{"role": "user", "content": "pertama"}, {"role": "assistant", "content": "ok"}]
 
 
+def test_chat_returns_503_when_ollama_is_unreachable(client, auth_headers, session_id, monkeypatch):
+    """A dead local LLM is an availability problem, so it must be 503, not 500.
+
+    Regression: _chat() called httpx.post with no try/except, so a refused
+    connection escaped as an unhandled httpx.ConnectError and FastAPI answered
+    500 Internal Server Error. Task 20 Step 2 requires 503.
+    """
+    import httpx
+
+    from agent import orchestrator
+
+    def refuse(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(orchestrator.httpx, "post", refuse)
+
+    response = client.post("/chat", headers=auth_headers, json={"session_id": session_id, "message": "halo"})
+
+    assert response.status_code == 503
+    assert "local LLM unavailable" in response.json()["detail"]
+
+
+def test_document_ingest_returns_503_when_embedding_model_is_unreachable(client, auth_headers, monkeypatch, tmp_path):
+    """Same contract on the ingest path: embedding model down is 503, not 500."""
+    import httpx
+
+    from services import embedding_service
+
+    def refuse(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(embedding_service.httpx, "post", refuse)
+
+    policy = tmp_path / "policy.txt"
+    policy.write_text("kebijakan cuti tahunan 12 hari", encoding="utf-8")
+
+    with policy.open("rb") as handle:
+        response = client.post("/documents", headers=auth_headers, files={"file": ("policy.txt", handle, "text/plain")})
+
+    assert response.status_code == 503
+    assert "embedding model unavailable" in response.json()["detail"]
+
+
 def test_history_endpoint_returns_turns_in_order(client, auth_headers, session_id, monkeypatch):
     from routers import chat as chat_router
 

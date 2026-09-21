@@ -56,6 +56,6 @@ def test_ingest_file_stores_one_row_per_chunk(tmp_path: Path, db, monkeypatch):
     stored = document_service.ingest_file(db, target)
     db.flush()
 
-    rows = db.query(Document).filter_by(filename="unit-policy.txt").all()
+    rows = db.query(Document).filter_by(filename="unit-policy.txt").order_by(Document.id).all()
     assert stored == len(rows) > 1
     assert rows[0].doc_metadata["chunk_index"] == 0
