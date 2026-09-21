@@ -156,3 +156,19 @@ def test_chat_second_message_reuses_the_same_session(client, two_users, quiet_ag
 
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
+
+
+def test_auth_me_returns_username_and_role(client, two_users):
+    headers_a, _ = two_users
+
+    response = client.get("/auth/me", headers=headers_a)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["username"] == _username_of(headers_a)
+    assert body["role"] == "USER"
+    assert body["created_at"]
+
+
+def test_auth_me_rejects_missing_token(client):
+    assert client.get("/auth/me").status_code == 401

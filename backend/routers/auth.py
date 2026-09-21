@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
-from schemas import LoginRequest, TokenResponse
-from security import create_access_token, hash_password, verify_password
+from schemas import LoginRequest, TokenResponse, UserResponse
+from security import create_access_token, get_current_user, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -23,3 +23,14 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     return TokenResponse(access_token=create_access_token(user.username, user.role), role=user.role)
+
+
+@router.get("/me", response_model=UserResponse)
+def me(user: User = Depends(get_current_user)) -> User:
+    """Identity for the signed-in caller.
+
+    Not stale-token handling: the frontend's axios interceptor already clears the
+    token and reloads on any non-auth 401. This exists because username and
+    created_at have no other source -- the login response carries only the role.
+    """
+    return user
