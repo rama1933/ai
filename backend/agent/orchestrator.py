@@ -33,6 +33,40 @@ GIVE_UP_ANSWER = (
     "Coba persempit pertanyaannya."
 )
 
+# Sent back when the model wrote a tool-call blob as prose instead of calling a tool.
+JSON_RETRY_PROMPT = "Balas dengan kalimat biasa dalam bahasa Indonesia, bukan JSON."
+
+_TOOL_NAMES = {schema["function"]["name"] for schema in registry.TOOL_SCHEMAS}
+
+# Keys that mark a JSON object as an attempted tool call rather than an answer.
+_TOOL_CALL_KEYS = ('"name"', '"function"', '"parameters"', '"arguments"')
+
+
+def _salvage_tool_call(content: str) -> tuple[str, dict] | None:
+    """Recover a tool call the model wrote as JSON text instead of tool_calls.
+
+    llama3.2:3b intermittently emits `{"name": ..., "parameters": {...}}` in
+    message.content. Returns (name, arguments) only for a real registered tool.
+    """
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    name = payload.get("name") or payload.get("function")
+    arguments = payload.get("parameters") or payload.get("arguments")
+    if isinstance(name, str) and name in _TOOL_NAMES and isinstance(arguments, dict):
+        return name, arguments
+    return None
+
+
+def _looks_like_tool_call(content: str) -> bool:
+    """True when content is a JSON object that smells like a tool-call attempt."""
+    stripped = content.strip()
+    return stripped.startswith("{") and any(key in stripped for key in _TOOL_CALL_KEYS)
+
 
 class AgentError(RuntimeError):
     """Ollama could not be reached or returned an unusable response."""
@@ -54,6 +88,7 @@ def _chat(messages: list[dict]) -> dict:
             "messages": messages,
             "tools": registry.TOOL_SCHEMAS,
             "stream": False,
+            "options": {"temperature": settings.agent_temperature, "seed": settings.agent_seed},
         },
         timeout=TIMEOUT_SECONDS,
     )
@@ -87,9 +122,21 @@ def run_agent(
     for _ in range(settings.agent_max_iterations):
         reply = _chat(messages)
         tool_calls = reply.get("tool_calls") or []
+        content = reply.get("content") or ""
 
         if not tool_calls:
-            return AgentResult(answer=reply.get("content", "").strip(), tool_used=tool_used, sources=sources)
+            salvaged = _salvage_tool_call(content)
+            if salvaged is None:
+                if _looks_like_tool_call(content):
+                    # A malformed tool-call blob: never hand it to the user as an answer.
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": JSON_RETRY_PROMPT})
+                    continue
+                return AgentResult(answer=content.strip(), tool_used=tool_used, sources=sources)
+            name, arguments = salvaged
+            # Rebuild it as a native tool call so the loop below handles it identically.
+            reply = {**reply, "content": "", "tool_calls": [{"function": {"name": name, "arguments": arguments}}]}
+            tool_calls = reply["tool_calls"]
 
         messages.append(reply)
         for call in tool_calls:
@@ -103,7 +150,8 @@ def run_agent(
                     arguments = {}
 
             outcome = registry.dispatch(name, arguments, db=db, image_path=image_path)
-            tool_used = name
+            if tool_used is None:  # the agent's first choice, stable for callers and tests
+                tool_used = name
             sources.extend(outcome.sources)
             messages.append({"role": "tool", "content": outcome.text})
 

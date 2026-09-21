@@ -94,6 +94,75 @@ def test_iteration_cap_stops_a_tool_call_loop(monkeypatch):
     assert result.tool_used == "rag_search"
 
 
+def test_tool_call_written_as_content_is_dispatched_not_leaked(monkeypatch):
+    """VERIFIER PAYLOAD: llama3.2:3b put the tool call in message.content.
+
+    Observed response body was the raw blob with tool_used null:
+    {"answer":"{\\"name\\":\\"sql_query\\",\\"parameters\\":{...}}","tool_used":null,"sources":[]}
+    """
+    blob = '{"name":"sql_query","parameters":{"query":"SELECT 1"}}'
+    _mock_ollama(monkeypatch, [_reply(content=blob), _reply(content="Ada 1 dokumen.")])
+    dispatched: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        registry, "dispatch",
+        lambda name, arguments, db, image_path: (
+            dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
+        ),
+    )
+
+    result = orchestrator.run_agent(db=None, message="berapa dokumen ada?", history=[])
+
+    assert dispatched == [("sql_query", {"query": "SELECT 1"})]
+    assert result.answer == "Ada 1 dokumen."
+    assert '"name"' not in result.answer
+    assert result.tool_used == "sql_query"
+
+
+def test_unknown_tool_blob_in_content_is_not_returned_as_answer(monkeypatch):
+    """VERIFIER PAYLOAD: content '{"name":"function","parameters":{}}' returned verbatim."""
+    _mock_ollama(
+        monkeypatch,
+        [_reply(content='{"name":"function","parameters":{}}'), _reply(content="Baik, ini jawaban biasa.")],
+    )
+
+    result = orchestrator.run_agent(db=None, message="halo", history=[])
+
+    assert result.answer == "Baik, ini jawaban biasa."
+    assert '"name"' not in result.answer
+    assert result.tool_used is None
+
+
+def test_chat_payload_pins_decoding_determinism(monkeypatch):
+    sent = _mock_ollama(monkeypatch, [_reply(content="ok")])
+
+    orchestrator.run_agent(db=None, message="halo", history=[])
+
+    options = sent[0]["options"]
+    assert options["temperature"] == 0.0
+    assert "seed" in options
+
+
+def test_tool_used_records_the_first_tool_of_a_multi_tool_turn(monkeypatch):
+    _mock_ollama(
+        monkeypatch,
+        [
+            _reply(
+                tool_calls=[
+                    {"function": {"name": "rag_search", "arguments": {"query": "a"}}},
+                    {"function": {"name": "sql_query", "arguments": {"query": "SELECT 1"}}},
+                ]
+            ),
+            _reply(content="Selesai."),
+        ],
+    )
+    monkeypatch.setattr(registry, "dispatch", lambda name, arguments, db, image_path: registry.ToolOutcome(text="ok"))
+
+    result = orchestrator.run_agent(db=None, message="dua tool", history=[])
+
+    assert result.answer == "Selesai."
+    assert result.tool_used == "rag_search"
+
+
 def test_ollama_error_raises_agent_error(monkeypatch):
     def fake_post(url, json, timeout):
         return httpx.Response(500, text="boom", request=httpx.Request("POST", url))

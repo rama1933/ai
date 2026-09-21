@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     sql_tool_timeout_ms: int = 3000
 
     agent_max_iterations: int = 5
+    agent_temperature: float = 0.0
+    agent_seed: int = 0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
