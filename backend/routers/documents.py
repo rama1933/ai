@@ -27,7 +27,7 @@ def ingest_document(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        chunks = ingest_file(db, stored_path)
+        chunks = ingest_file(db, stored_path, user.id)
     except IngestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except EmbeddingError as exc:

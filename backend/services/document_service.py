@@ -51,8 +51,13 @@ def chunk_text(text: str, size: int = 800, overlap: int = 120) -> list[str]:
     return chunks
 
 
-def ingest_file(db: Session, path: Path) -> int:
-    """Load, clean, chunk, embed, and store a file. Returns the chunk count."""
+def ingest_file(db: Session, path: Path, user_id: int | None = None) -> int:
+    """Load, clean, chunk, embed, and store a file. Returns the chunk count.
+
+    user_id records provenance only. The corpus is shared by design, so retrieval
+    ignores it; it exists so per-user filtering is a one-line change later rather
+    than another migration.
+    """
     text = clean_text(load_text(path))
     if not text:
         raise IngestError(f"{path.name} produced no extractable text")
@@ -66,6 +71,7 @@ def ingest_file(db: Session, path: Path) -> int:
                 filename=path.name,
                 content=chunk,
                 embedding=vector,
+                user_id=user_id,
                 doc_metadata={"chunk_index": index, "chunk_count": len(chunks), "source": str(path)},
             )
         )

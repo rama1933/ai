@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from database import SessionLocal
-from models import ChatHistory, ChatSession, User
+from models import ChatHistory, ChatSession, Document, User
 
 PSQL = "/opt/homebrew/opt/postgresql@17/bin/psql"
 TEST_DB = "agentic_rag_test"
@@ -172,3 +172,32 @@ def test_auth_me_returns_username_and_role(client, two_users):
 
 def test_auth_me_rejects_missing_token(client):
     assert client.get("/auth/me").status_code == 401
+
+
+def test_upload_records_uploader(client, two_users, tmp_path, monkeypatch):
+    """POST /upload is the path most uploads take, so provenance is checked there
+    rather than only on POST /documents."""
+    from services import document_service
+
+    monkeypatch.setattr(document_service, "embed_texts", lambda texts: [[0.01] * 768 for _ in texts])
+    headers_a, _ = two_users
+    policy = tmp_path / "own-policy.txt"
+    policy.write_text("kebijakan cuti tahunan 12 hari", encoding="utf-8")
+
+    with policy.open("rb") as handle:
+        response = client.post(
+            "/upload", headers=headers_a, files={"file": ("own-policy.txt", handle, "text/plain")}
+        )
+
+    assert response.status_code == 200, response.text
+    # save_upload stores the file as "<uuid>-own-policy.txt", so the name the API
+    # reports is the only one the ingested rows can carry.
+    stored_name = response.json()["filename"]
+    session = SessionLocal()
+    owner = session.query(User).filter_by(username=_username_of(headers_a)).one()
+    rows = session.query(Document).filter_by(filename=stored_name).all()
+    assert rows, "the document should have been ingested"
+    assert {row.user_id for row in rows} == {owner.id}
+    session.query(Document).filter_by(filename=stored_name).delete(synchronize_session=False)
+    session.commit()
+    session.close()

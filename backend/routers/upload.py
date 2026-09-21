@@ -27,7 +27,7 @@ def upload(
         kind = classify(stored.name, file.content_type or "", handle.read(64))
     if kind == "document":
         try:
-            ingest_file(db, stored)
+            ingest_file(db, stored, user.id)
         except IngestError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except EmbeddingError as exc:
