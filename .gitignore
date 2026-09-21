@@ -5,5 +5,4 @@ __pycache__/
 .venv/
 node_modules/
 dist/
-storage/uploads/
-storage/processed/
+/storage/
