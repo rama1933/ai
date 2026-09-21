@@ -17,6 +17,20 @@ router = APIRouter(tags=["chat"])
 
 HISTORY_TURNS = 10
 
+TITLE_LIMIT = 60
+
+
+def _title_from(message: str) -> str:
+    """First user message, trimmed to TITLE_LIMIT characters on a word boundary.
+
+    ponytail: truncation, not an LLM-written title. Swap in a one-shot generate
+    call if the titles read badly.
+    """
+    trimmed = message.strip()
+    if len(trimmed) <= TITLE_LIMIT:
+        return trimmed
+    return trimmed[:TITLE_LIMIT].rsplit(" ", 1)[0]
+
 
 def _resolve_image(image_name: str | None) -> str | None:
     """Map the client-supplied upload name onto a real path inside upload_dir."""
@@ -43,7 +57,9 @@ def _prepare_turn(
     because its dependency session is closed by then.
     """
     image_path = _resolve_image(payload.image_path)
-    get_or_create_session(db, payload.session_id, user)
+    session = get_or_create_session(db, payload.session_id, user)
+    if session.title is None:  # auto-title from the first message only
+        session.title = _title_from(payload.message)
 
     if truncate_after_id is not None:
         # Scoped by session_id as well as id: an id alone is a cross-session write.
