@@ -1,7 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: 'class',
-  content: ['./index.html', './src/**/*.{vue,ts}'],
+  // Spec files are excluded: they are not shipped, and a spec that asserts which
+  // utilities exist necessarily spells their class names, which Tailwind's text
+  // scanner would otherwise turn into dead CSS in the production bundle.
+  content: ['./index.html', './src/**/*.{vue,ts}', '!./src/**/__tests__/**'],
   theme: {
     extend: {
       // Semantic tokens only. Components never name a raw colour, so light/dark

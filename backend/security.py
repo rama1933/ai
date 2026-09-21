@@ -5,7 +5,6 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -86,6 +85,14 @@ def get_or_create_session(db: Session, session_id: str, user: User) -> ChatSessi
     because these models declare no relationship() to give it a dependency edge, and
     `models.ChatHistory` sorts before `models.ChatSession`. Without the flush the
     chat_history INSERT goes first and the foreign key rejects it.
+
+    `updated_at` is assigned a real `datetime`, not `func.now()`. A SQL construct
+    assigned to a mapped attribute stays a construct in the identity map until the
+    next flush, and `get_db` commits only after the endpoint returns -- so an
+    endpoint that serialised this object would hand Pydantic a `Function` and fail
+    validation. `datetime.now(timezone.utc)` stores the same instant the column's
+    `CURRENT_TIMESTAMP` default would: the column is a naive TIMESTAMP, so
+    Postgres renders the bound timestamptz in the session's time zone.
     """
     session = db.query(ChatSession).filter_by(id=session_id).one_or_none()
     if session is None:
@@ -94,5 +101,5 @@ def get_or_create_session(db: Session, session_id: str, user: User) -> ChatSessi
         db.flush()
     elif session.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown session")
-    session.updated_at = func.now()
+    session.updated_at = datetime.now(timezone.utc)
     return session

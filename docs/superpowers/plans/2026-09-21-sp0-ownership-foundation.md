@@ -1210,6 +1210,8 @@ const username = ref<string | null>(localStorage.getItem(USERNAME_KEY))
 > 2. `username.value = username` inside `login()` — required by Step 6, because `App.vue` mounts once so the boot fetch never re-fires after an in-session login — cannot be written that way: the `login(username, password)` parameter shadows the module-level `username` ref, so the assignment targets a string primitive (`TypeError: Cannot create property 'value' on string`). Rename the **parameter** to `name`, leaving the ref — the public interface — untouched.
 >
 > Also note that `vue-tsc -b` type-checks the spec files (`tsconfig.app.json` includes `src/**/*.ts`), so a test that passes under vitest can still fail the build. The gate is `npm test` **and** `npm run build`.
+>
+> **Subsequent correction:** specs are now type-checked by their own project, `tsconfig.spec.json` (which `tsconfig.app.json` excludes, so they are not in two projects), because a spec needing Node built-ins cannot compile against an app config whose `types` are deliberately narrow. The gate and its consequence are unchanged; only the project that does the checking moved.
 
 Set `username.value = null` and `localStorage.removeItem(USERNAME_KEY)` inside the existing `logout()`, and add `USERNAME_KEY` beside `TOKEN_KEY` / `ROLE_KEY` in `services/api.ts`:
 

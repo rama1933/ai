@@ -22,7 +22,7 @@ const hasConversation = computed(() => messages.value.length > 0)
 
 const SUGGESTIONS = [
   'Berapa hari cuti tahunan karyawan tetap?',
-  'Berapa jumlah baris di tabel chat_history?',
+  'Berapa jumlah baris pada tabel documents?',
   'Halo, perkenalkan dirimu',
 ]
 

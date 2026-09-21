@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-import { api, describeError, type SourceRef } from '../services/api'
+import { api, describeError, isNotFound, type SourceRef } from '../services/api'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -36,6 +36,11 @@ export function useChat() {
         content: item.message,
       }))
     } catch (err) {
+      // A session id is generated client-side, so a brand-new conversation has no
+      // row until the first POST /chat. GET /chat/history answers 404 for that --
+      // deliberately, and the same 404 an unowned session gets -- which means
+      // "empty", not "broken". Anything else is a real error worth a banner.
+      if (isNotFound(err)) return
       error.value = describeError(err)
     }
   }

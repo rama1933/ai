@@ -36,9 +36,26 @@ def check_tables() -> None:
     out = psql("agentic_rag", "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     if out.returncode != 0:
         return  # already reported by check_postgres
-    missing = {"users", "chat_history", "documents"} - set(out.stdout.split())
+    missing = {"users", "chat_history", "sessions", "documents"} - set(out.stdout.split())
     if missing:
-        failures.append(f"postgres: missing tables {sorted(missing)}; run db/schema.sql")
+        failures.append(
+            f"postgres: missing tables {sorted(missing)}; "
+            "run db/schema.sql then db/migrations/001_ownership.sql"
+        )
+        return
+
+    # SP0's migration adds documents.user_id. A database that never had it applied
+    # passes the table check above -- every table it names already existed -- and then
+    # dies on the first upload, so the column the migration adds is checked here too.
+    cols = psql(
+        "agentic_rag",
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'documents'",
+    )
+    if cols.returncode == 0 and "user_id" not in cols.stdout.split():
+        failures.append(
+            "postgres: documents has no user_id column; run db/migrations/001_ownership.sql"
+        )
 
 
 def check_ollama() -> None:

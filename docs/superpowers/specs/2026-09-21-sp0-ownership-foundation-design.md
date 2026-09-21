@@ -87,6 +87,8 @@ Rejected: **Tailwind v4 migration** — a codemod plus a `style.css` rewrite on 
 
 `POST /chat` creates the session row on first message if it does not exist, owned by the caller. This keeps the existing client contract (frontend generates the id) and, more importantly, keeps `test_chat_endpoint.py` and `test_e2e_matrix.py` passing unmodified — they post arbitrary `session_id` values with no setup. `GET /chat/history` must not create rows, so it requires an existing owned session.
 
+> The word "unmodified" here is wrong for `test_chat_endpoint.py`; its fixture changed, though no assertion did. See the post-execution correction in §8.
+
 ### Decision 7 — `chat_history` leaves the SQL tool's allowlist (approved)
 
 `backend/config.py:27` reads `sql_tool_allowed_tables: list[str] = ["chat_history", "documents"]`, and the SQL tool is reachable from `POST /chat` by any authenticated user (`routers/chat.py:49-50` → `agent/registry.py:96-103`). Its validation (`tools/sql_tool.py`) constrains statement count, statement type, and table name, but carries **no user or session parameter**; `db/schema.sql:51` grants `rag_readonly` `SELECT` on `chat_history` with no row-level security; and `registry.py:96-103` returns rows to the model as `repr(rows)`.
@@ -270,6 +272,8 @@ Scoped deliberately small. SP0 installs the foundation; SP1 builds pages on it.
 - **`frontend/src/composables/useAuth.ts`** — add `fetchMe()`, called once on boot, populating `username` and `role` from the server instead of trusting `localStorage`.
 - **No component is modified.** All six existing components continue to work because nothing they reference is renamed or removed.
 
+  > **Post-execution correction (this claim is false as written — do not read the shipped diff as a violation of it).** Four `to-accent` classes were renamed to `to-accent-strong` across three components (`ChatBox.vue` ×3, `LoginForm.vue`, `MessageBubble.vue`), because this section's own alias block replaces the flat `accent` key with an object form so that shadcn's `bg-accent` / `text-accent-foreground` resolve. Once `accent` is an object, a bare `to-accent` no longer means `--c-accent`, so the gradient stop had to move to the new `accent-strong` key. The rename is rendering-neutral: `to-accent` under the pre-change config and `to-accent-strong` under the current one both emit `--tw-gradient-to: rgb(var(--c-accent) / 1)`. What the claim got wrong is not that components changed but that the change was safe *because* nothing changed — the enforcement boundary moved (`GET /chat/history` began answering 404 for an unknown session), and that reached `ChatBox.vue`, which this section had ruled out of scope. The regression that followed and its fix are recorded in `.superpowers/sdd/2026-09-21-sp0-ownership-foundation/final-fix-report.md` (item A1).
+
 ---
 
 ## 8. Testing
@@ -311,6 +315,8 @@ The tripwire concerns the **upsert design (Decision 6)** and nothing else. If `t
 
 Frontend: `frontend/src/composables/__tests__/useChat.spec.ts` must still pass. Add a case covering `fetchMe()` populating `username` from the server response.
 
+> **Post-execution correction (both statements below are false as written).** This section and criterion 3 both say `backend/tests/test_chat_endpoint.py` passes **unmodified**. It did not. Its `session_id` fixture was necessarily changed: the new foreign key means a `chat_history` row cannot exist without a parent `sessions` row, and that fixture deletes the rows it created, so it now deletes the `ChatSession` too. No assertion, case, or monkeypatch in that file changed, and the file's chat cases still pass — which is what Decision 6's tripwire asks. The tripwire's concern was the upsert design, and nothing about it was implicated; the edit is cleanup of a row that did not exist before. Read "unmodified" here as "no assertion modified".
+
 ---
 
 ## 9. Invariants and risks
@@ -340,7 +346,7 @@ SP0 is done when all of the following hold, each demonstrated by a command whose
 
 1. `db/migrations/001_ownership.sql` applies cleanly to `agentic_rag`, is a no-op on a second run, and `POST /chat` then succeeds **as `rag_app`** — applying cleanly is not the same as the application role being able to write the new table.
 2. `agentic_rag_test` carries the same schema.
-3. The full backend suite passes, with `test_chat_endpoint.py` and `test_auth.py` unmodified and the three expected edits from §8 in place.
+3. The full backend suite passes, with `test_chat_endpoint.py` and `test_auth.py` unmodified and the three expected edits from §8 in place. *(`test_chat_endpoint.py`'s `session_id` fixture did change — see the post-execution correction in §8. `test_auth.py` is unmodified. The requirement itself holds.)*
 4. A two-user isolation check returns 404 for the foreign session, both for `GET /chat/history` and `POST /chat`.
 5. The agent refuses to read another user's conversations by **any** route. Concretely: a user asks the assistant to query `chat_history` through the SQL tool and is refused, not answered. This is the counterpart to criterion 4 — the endpoint check alone passed on the first draft of this spec, while the SQL tool stayed wide open (Decision 7).
 6. `GET /auth/me` returns `username`, `role`, and `created_at`.

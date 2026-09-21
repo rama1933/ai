@@ -52,7 +52,9 @@ GROUP BY h.session_id;
 -- Guard on the column rather than a constraint name: a database built from
 -- db/schema.sql already carries an inline FK on chat_history.session_id, and adding a
 -- second, differently-named FK to the same column is not idempotent in any useful
--- sense -- it is duplicate schema.
+-- sense -- it is duplicate schema. The guard asks for an FK *to sessions* specifically:
+-- asking only whether some FK exists on the column would let an FK pointing elsewhere
+-- suppress the one this migration is here to add.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -62,6 +64,7 @@ BEGIN
           ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
         WHERE c.conrelid = 'chat_history'::regclass
           AND c.contype = 'f'
+          AND c.confrelid = 'sessions'::regclass
           AND a.attname = 'session_id'
     ) THEN
         ALTER TABLE chat_history
@@ -73,8 +76,13 @@ END $$;
 ALTER TABLE documents
     ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
 
+-- Same refusal to guess as the sessions backfill above: attribute the pre-SP0 corpus
+-- only when there is exactly one account it could belong to. With two or more, every
+-- NULL-owner document would silently become the lowest-id user's, and SP2 renders
+-- "uploaded by" from this column -- a misattribution no later task can detect.
 UPDATE documents
 SET user_id = (SELECT id FROM users ORDER BY id LIMIT 1)
-WHERE user_id IS NULL;
+WHERE user_id IS NULL
+  AND (SELECT count(*) FROM users) = 1;
 
 COMMIT;

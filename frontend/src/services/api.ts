@@ -53,12 +53,23 @@ http.interceptors.response.use(
     if (status === 401 && !isAuthCall) {
       localStorage.removeItem(TOKEN_KEY)
       localStorage.removeItem(ROLE_KEY)
+      localStorage.removeItem(USERNAME_KEY)
       window.location.reload()
       return new Promise(() => {}) // the page is being replaced; never settle
     }
     return Promise.reject(error)
   },
 )
+
+/**
+ * True when a request failed because the resource is absent. `GET /chat/history`
+ * answers 404 for a session that does not exist, deliberately and
+ * indistinguishably from one owned by somebody else, so callers that treat
+ * "absent" as "empty" need this rather than a raw status read.
+ */
+export function isNotFound(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 404
+}
 
 /** Turn a thrown value into something worth showing a person. */
 export function describeError(error: unknown): string {

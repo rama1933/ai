@@ -75,4 +75,36 @@ describe('useChat', () => {
 
     expect(spy.mock.calls[0][0]).toBe(spy.mock.calls[1][0])
   })
+
+  it('treats a 404 from the history endpoint as an empty conversation', async () => {
+    // A session id is minted client-side, so a brand-new conversation has no row
+    // until the first POST /chat and GET /chat/history answers 404. That is the
+    // contract, not a failure: the empty state must not show an error banner.
+    vi.spyOn(api, 'fetchHistory').mockRejectedValue(
+      Object.assign(new Error('unknown session'), {
+        isAxiosError: true,
+        response: { status: 404, data: { detail: 'unknown session' } },
+      }),
+    )
+
+    const chat = useChat()
+    await chat.loadHistory()
+
+    expect(chat.messages.value).toHaveLength(0)
+    expect(chat.error.value).toBeNull()
+  })
+
+  it('still surfaces a non-404 history failure', async () => {
+    vi.spyOn(api, 'fetchHistory').mockRejectedValue(
+      Object.assign(new Error('Service Unavailable'), {
+        isAxiosError: true,
+        response: { status: 503, data: { detail: 'local LLM unavailable' } },
+      }),
+    )
+
+    const chat = useChat()
+    await chat.loadHistory()
+
+    expect(chat.error.value).toContain('local LLM unavailable')
+  })
 })

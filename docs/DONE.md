@@ -405,6 +405,138 @@ So the build still succeeds, and the frontend suite is now 9 tests in 2 files ag
 recorded in Step 4 above — a net **+4**, all of them the four cases in `useAuth.spec.ts`, which did
 not exist before the SP0 work (`10bd345` added it).
 
+### Command 5 — completion criterion 1's second-run half, on the live database
+
+Recorded in the final fix round. Criterion 1 asks for three things of
+`db/migrations/001_ownership.sql`: that it applies cleanly to `agentic_rag`, that it is a no-op on a
+second run, and that `POST /chat` then works as `rag_app`. The first and third were run live and are
+recorded above. **The second was not** — the no-op half had only ever been demonstrated on
+`agentic_rag_test`, with the live database argued to behave the same rather than shown to. That gap
+is closed here. Re-running is safe by construction and is the point of the criterion.
+
+Read-only snapshot before, then the re-run, then the same snapshot after:
+
+```text
+$ /opt/homebrew/opt/postgresql@17/bin/psql -d agentic_rag -c "SELECT
+    (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM sessions) AS sessions,
+    (SELECT count(*) FROM chat_history) AS chat_history, (SELECT count(*) FROM documents) AS documents,
+    (SELECT count(*) FROM documents WHERE user_id IS NULL) AS docs_unowned,
+    (SELECT count(*) FROM pg_constraint c JOIN pg_attribute a
+       ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey)
+       WHERE c.conrelid='chat_history'::regclass AND c.contype='f' AND a.attname='session_id')
+      AS chat_history_fks"
+ users | sessions | chat_history | documents | docs_unowned | chat_history_fks
+-------+----------+--------------+-----------+--------------+------------------
+     1 |        3 |           14 |       291 |            0 |                1
+(1 row)
+
+$ /opt/homebrew/opt/postgresql@17/bin/psql -d agentic_rag -v ON_ERROR_STOP=1 -f db/migrations/001_ownership.sql
+BEGIN
+psql:db/migrations/001_ownership.sql:17: NOTICE:  relation "sessions" already exists, skipping
+CREATE TABLE
+psql:db/migrations/001_ownership.sql:19: NOTICE:  relation "sessions_user_idx" already exists, skipping
+CREATE INDEX
+GRANT
+DO
+INSERT 0 0
+DO
+psql:db/migrations/001_ownership.sql:77: NOTICE:  column "user_id" of relation "documents" already exists, skipping
+ALTER TABLE
+UPDATE 0
+COMMIT
+
+$ /opt/homebrew/opt/postgresql@17/bin/psql -d agentic_rag -c "<the same snapshot query>"
+ users | sessions | chat_history | documents | docs_unowned | chat_history_fks
+-------+----------+--------------+-----------+--------------+------------------
+     1 |        3 |           14 |       291 |            0 |                1
+(1 row)
+```
+
+**Criterion 1 PASS, all three halves now demonstrated on `agentic_rag`.** Exit status 0 under
+`ON_ERROR_STOP=1`; `INSERT 0 0` and `UPDATE 0` are the no-op, not merely a tolerated re-run; the
+constraint count is unchanged at exactly 1. A third run was made to confirm the property is stable
+rather than second-run-specific, and it also reported `INSERT 0 0` / `UPDATE 0`. The snapshot either
+side is identical.
+
+Nothing surprised. One detail worth recording because it is checked *not* assumed: the two databases
+reached the same schema by different routes — `agentic_rag` carries the FK this migration added
+(`chat_history_session_fk`), while `agentic_rag_test` carries the one `db/schema.sql` creates inline
+(`chat_history_session_id_fkey`) — which is exactly what the column-based guard exists for.
+
+The application role's half of criterion 1 was re-read after the re-run rather than recalled (the
+original live `POST /chat` demonstration is the one recorded above):
+
+```text
+$ /opt/homebrew/opt/postgresql@17/bin/psql -d agentic_rag -tAc "SELECT
+    'sessions INSERT=' || has_table_privilege('rag_app','sessions','INSERT'), ..."
+sessions INSERT=true|sessions UPDATE=true|sessions SELECT=true|documents.user_id UPDATE=true
+```
+
+### Command 6 — completion criterion 7's second half, in a browser
+
+Criterion 7 is "`npm run build` succeeds and all six existing components render unchanged in light
+and dark mode". The build half is Command 4. The rendering half had **no evidence at all** in this
+log, and it is the half the branch put at risk: `to-accent` was renamed to `to-accent-strong` in
+four places across three components. Claiming it without looking would have been a claim from
+memory, which this file's own preamble forbids.
+
+So it was looked at. The app was driven in a real browser (Playwright) against a local pair — backend
+on `:8050` pointed at `agentic_rag_test`, vite on `:5199` pointed at that backend — rather than
+against the servers already on `:8000`/`:5173`, so that registering a user wrote nothing to the live
+database. The probe: register through `LoginForm`, land on the empty `ChatBox`, send one message so
+`MessageBubble` renders, and toggle the theme.
+
+| Component | Where it was seen | Both themes |
+|---|---|---|
+| `LoginForm.vue` | `.playwright-mcp/c2-login-light.png`, `.playwright-mcp/c2-login-dark.png` | yes |
+| `ChatBox.vue` (header, empty state, composer) | `.playwright-mcp/c2-chat-light.png`, `.playwright-mcp/c2-chat-dark.png` | yes |
+| `MessageBubble.vue` (user + assistant bubbles, tool chip) | `c2-chat-light.png`, `c2-chat-dark.png` | yes |
+| `UploadButton.vue` (composer paperclip) | `c2-chat-light.png`, `c2-chat-dark.png` | yes |
+| `ThemeToggle.vue` | every shot; it is the control used to switch | yes |
+| `AppIcon.vue` | every shot (logo, header, tool chip, send, paperclip) | yes |
+
+All six render, in both palettes, with the `from-primary to-accent-strong` gradient visible and
+intact in each. Screenshots are working-tree artefacts under `.playwright-mcp/` and are not
+committed, in keeping with the other screenshots this branch leaves untracked.
+
+Two things this probe observed that are not about criterion 7, recorded here because they are first
+observations rather than re-runs of anything above. **The browser console logged
+`404 ... /chat/history?session_id=session-…` on the first load of the new session, and the empty
+state rendered with no `role="alert"` banner** — the deliberately-404s-until-first-message contract
+and the frontend's handling of it, seen end to end rather than unit-tested. And **the middle
+suggestion on the empty state reads "Berapa jumlah baris pada tabel documents?"**, the affordance
+having been retargeted to the table the SQL tool can still reach. Both are covered by tests as well;
+this is the observation, not the assertion.
+
+The rename's rendering-neutrality was also re-derived from the CSS rather than taken on trust, by
+building the same probe class against the pre-change config and the current one:
+
+```text
+$ git show 0a8513d^:frontend/tailwind.config.js > /tmp/pre-rename-tailwind.config.js
+$ cd frontend
+$ printf '<div class="to-accent to-accent-strong from-primary"></div>' > /tmp/grad-probe.html
+$ node_modules/.bin/tailwindcss -c /tmp/pre-rename-tailwind.config.js -i src/style.css \
+    --content /tmp/grad-probe.html -o /tmp/grad-probe-old.css
+.to-accent {
+  --tw-gradient-to: rgb(var(--c-accent) / 1) var(--tw-gradient-to-position);
+}
+
+$ node_modules/.bin/tailwindcss -c tailwind.config.js -i src/style.css \
+    --content /tmp/grad-probe.html -o /tmp/grad-probe.css
+.to-accent-strong {
+  --tw-gradient-to: rgb(var(--c-accent) / 1) var(--tw-gradient-to-position);
+}
+```
+
+Byte-identical declaration, so the class the components now name emits precisely what the class they
+used to name emitted. Note that `.to-accent` *today* is **not** equivalent — `accent.DEFAULT` now
+resolves to `--c-primary-soft` — which is the whole reason the rename was required, and why this
+equivalence had to be probed against the pre-change config rather than the current one.
+
+The probe user this section created was deleted afterwards (`agentic_rag_test` returned to 0 users /
+0 sessions / 0 chat rows), and the live database was re-read to confirm it is untouched at 1 user /
+3 sessions / 14 chat rows / 291 documents.
+
 ### Documentation correction made with these rows
 
 `README.md:100` still read "holds `SELECT` on `chat_history` and `documents` only — never on `users`",
