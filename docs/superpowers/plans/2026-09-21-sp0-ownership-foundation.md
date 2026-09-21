@@ -1204,6 +1204,13 @@ const username = ref<string | null>(localStorage.getItem(USERNAME_KEY))
   return { token, role, username, isAuthenticated, login, logout, fetchMe }
 ```
 
+> **Post-execution corrections to the snippet above (both were ruled on during Task 6 and the shipped code differs from this text — do not re-apply it verbatim):**
+>
+> 1. `catch { logout() }` is wrong. It signs the person out on *any* failure — a backend restart, a dropped connection, a 500 — while their token is still valid. The rationale that the axios interceptor would cover this is also false: `services/api.ts:51` computes `isAuthCall = url.includes('/auth/')` and skips its own 401 handling for those URLs, so a 401 from `/auth/me` is deliberately deferred to this function. Narrow it to `if (axios.isAxiosError(error) && error.response?.status === 401) logout()`, with `import axios from 'axios'`.
+> 2. `username.value = username` inside `login()` — required by Step 6, because `App.vue` mounts once so the boot fetch never re-fires after an in-session login — cannot be written that way: the `login(username, password)` parameter shadows the module-level `username` ref, so the assignment targets a string primitive (`TypeError: Cannot create property 'value' on string`). Rename the **parameter** to `name`, leaving the ref — the public interface — untouched.
+>
+> Also note that `vue-tsc -b` type-checks the spec files (`tsconfig.app.json` includes `src/**/*.ts`), so a test that passes under vitest can still fail the build. The gate is `npm test` **and** `npm run build`.
+
 Set `username.value = null` and `localStorage.removeItem(USERNAME_KEY)` inside the existing `logout()`, and add `USERNAME_KEY` beside `TOKEN_KEY` / `ROLE_KEY` in `services/api.ts`:
 
 ```ts
