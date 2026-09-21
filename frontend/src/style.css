@@ -207,7 +207,7 @@
   .hljs-selector-tag,
   .hljs-literal,
   .hljs-section {
-    @apply text-accent-strong;
+    @apply text-primary;
   }
 
   .hljs-string,
@@ -230,18 +230,13 @@
   .hljs-title,
   .hljs-name,
   .hljs-type {
-    @apply font-semibold text-primary;
+    @apply font-semibold text-fg;
   }
 
   .hljs-built_in,
   .hljs-variable,
   .hljs-template-variable {
-    @apply text-accent;
-  }
-
-  .dark .hljs-string,
-  .dark .hljs-attr {
-    @apply text-success/90;
+    @apply text-subtle;
   }
 
   .md-body blockquote {
