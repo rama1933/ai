@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     agent_temperature: float = 0.0
     agent_seed: int = 0
 
+    # Retrieval guardrail: cosine similarity below this is treated as "not a
+    # match" so the model never summarises from weak context.
+    rag_min_score: float = 0.6
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
