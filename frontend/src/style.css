@@ -1,3 +1,209 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Two palettes, one set of semantic tokens. Components only ever reference
+ * tokens (bg-surface, text-subtle, border-border), never a raw colour, so
+ * light and dark cannot drift apart. Dark values are desaturated tonal
+ * variants, not inverted light values.
+ */
+@layer base {
+  :root {
+    --c-bg: 250 249 254;
+    --c-surface: 255 255 255;
+    --c-elevated: 244 242 253;
+    --c-fg: 30 27 75;
+    --c-subtle: 86 82 122;
+    --c-faint: 107 103 144;
+    /* Two border weights. --c-border is the decorative hairline (dividers,
+       table rules, hr, code-block frames) and is deliberately quiet.
+       --c-border-strong is for boundaries that carry meaning — the outline of
+       a control or of a discrete object — and must clear WCAG 1.4.11's 3:1
+       against every surface it can land on (bg 3.00, surface 3.15, elevated
+       2.79 — elevated only ever carries decorative rings, never a control). */
+    --c-border: 226 221 250;
+    --c-border-strong: 148 130 237;
+    --c-primary: 124 58 237;
+    --c-primary-fg: 255 255 255;
+    --c-primary-soft: 237 231 254;
+    --c-accent: 8 145 178;
+    --c-danger: 190 30 30;
+    --c-danger-soft: 254 242 242;
+    --c-success: 5 122 85;
+    --c-shadow: 15 12 40;
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --c-bg: 15 13 23;
+    --c-surface: 26 23 38;
+    --c-elevated: 34 30 49;
+    --c-fg: 236 234 246;
+    --c-subtle: 180 175 204;
+    --c-faint: 152 146 178;
+    --c-border: 50 44 72;
+    --c-border-strong: 111 98 159;
+    --c-primary: 167 139 250;
+    --c-primary-fg: 26 20 48;
+    --c-primary-soft: 42 36 64;
+    --c-accent: 34 211 238;
+    --c-danger: 248 113 113;
+    --c-danger-soft: 42 26 30;
+    --c-success: 52 211 153;
+    --c-shadow: 0 0 0;
+
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg font-sans text-fg antialiased;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible focus for keyboard users only — never remove the ring outright. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-bg;
+  }
+
+  ::selection {
+    @apply bg-primary/25;
+  }
+
+  /* Thin, token-coloured scrollbars; the track stays transparent so it reads
+     as part of the surface rather than chrome. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--c-border)) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--c-border));
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--c-faint) / 0.6);
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Rendered markdown from the model. Hand-rolled instead of pulling in
+     @tailwindcss/typography: this app needs six element styles, not a plugin. */
+  .md-body {
+    @apply text-[0.9375rem] leading-[1.7];
+  }
+
+  .md-body > * + * {
+    @apply mt-3;
+  }
+
+  .md-body h1,
+  .md-body h2,
+  .md-body h3 {
+    @apply font-display font-semibold tracking-tight text-fg;
+  }
+
+  .md-body h1 {
+    @apply text-lg;
+  }
+
+  .md-body h2 {
+    @apply text-base;
+  }
+
+  .md-body h3 {
+    @apply text-[0.9375rem];
+  }
+
+  .md-body ul,
+  .md-body ol {
+    @apply space-y-1 pl-5;
+  }
+
+  .md-body ul {
+    @apply list-disc;
+  }
+
+  .md-body ol {
+    @apply list-decimal;
+  }
+
+  .md-body li::marker {
+    @apply text-faint;
+  }
+
+  .md-body a {
+    @apply font-medium text-primary underline underline-offset-2;
+  }
+
+  .md-body strong {
+    @apply font-semibold text-fg;
+  }
+
+  .md-body code {
+    @apply rounded-md bg-primary-soft px-1.5 py-0.5 font-mono text-[0.8125rem] text-fg;
+  }
+
+  .md-body pre {
+    @apply overflow-x-auto rounded-xl border border-border bg-elevated p-3;
+  }
+
+  .md-body pre code {
+    @apply bg-transparent p-0 text-[0.8125rem];
+  }
+
+  .md-body blockquote {
+    @apply border-l-2 border-primary/40 pl-3 text-subtle;
+  }
+
+  .md-body table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .md-body th,
+  .md-body td {
+    @apply border-b border-border px-2 py-1.5 text-left;
+  }
+
+  .md-body th {
+    @apply font-medium text-subtle;
+  }
+
+  .md-body hr {
+    @apply border-border;
+  }
+}
+
+/* Nothing here is load-bearing: every animation is decoration on top of a
+   state the user can already see. So honour the OS preference completely. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

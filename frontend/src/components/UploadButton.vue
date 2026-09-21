@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+import AppIcon from './AppIcon.vue'
+
 defineProps<{ disabled?: boolean }>()
 const emit = defineEmits<{ file: [File] }>()
 
@@ -17,12 +19,13 @@ function onChange(event: Event): void {
 <template>
   <button
     type="button"
-    class="rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-100 disabled:opacity-40"
+    class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl text-subtle transition-colors duration-200 hover:bg-elevated hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-subtle"
     :disabled="disabled"
+    aria-label="Lampirkan gambar atau dokumen"
     title="Lampirkan gambar atau dokumen"
     @click="inputRef?.click()"
   >
-    📎
+    <AppIcon name="paperclip" :size="18" />
     <input
       ref="inputRef"
       type="file"

@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-import { api, type SourceRef } from '../services/api'
+import { api, describeError, type SourceRef } from '../services/api'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -36,7 +36,7 @@ export function useChat() {
         content: item.message,
       }))
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err)
+      error.value = describeError(err)
     }
   }
 
@@ -54,7 +54,7 @@ export function useChat() {
         })
       }
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err)
+      error.value = describeError(err)
     } finally {
       isLoading.value = false
     }
@@ -79,7 +79,7 @@ export function useChat() {
       })
       pendingImage.value = null
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err)
+      error.value = describeError(err)
     } finally {
       isLoading.value = false
     }

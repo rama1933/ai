@@ -23,7 +23,8 @@ export interface UploadResponse {
   kind: 'image' | 'document'
 }
 
-const TOKEN_KEY = 'agentic-rag-token'
+export const TOKEN_KEY = 'agentic-rag-token'
+export const ROLE_KEY = 'agentic-rag-role'
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000',
@@ -36,9 +37,57 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-export const api = {
-  tokenKey: TOKEN_KEY,
+/**
+ * A 401 anywhere except the login/register calls means the stored JWT is gone
+ * or expired. Without this the UI keeps rendering the chat and every send
+ * fails with a raw axios message, leaving the person stuck on a dead screen.
+ */
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status: number | undefined = error.response?.status
+    const url: string = error.config?.url ?? ''
+    const isAuthCall = url.includes('/auth/')
 
+    if (status === 401 && !isAuthCall) {
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(ROLE_KEY)
+      window.location.reload()
+      return new Promise(() => {}) // the page is being replaced; never settle
+    }
+    return Promise.reject(error)
+  },
+)
+
+/** Turn a thrown value into something worth showing a person. */
+export function describeError(error: unknown): string {
+  if (!axios.isAxiosError(error)) {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  if (!error.response) {
+    return 'Tidak dapat menghubungi server. Pastikan backend berjalan di port 8000.'
+  }
+
+  const { status, data } = error.response
+  const detail =
+    data && typeof data === 'object' && 'detail' in data ? String((data as { detail: unknown }).detail) : ''
+
+  switch (status) {
+    case 401:
+      return 'Username atau password salah.'
+    case 400:
+      return detail || 'Permintaan ditolak.'
+    case 422:
+      return detail || 'Berkas tidak dapat diproses.'
+    case 503:
+      return detail || 'Model lokal sedang tidak tersedia. Coba lagi sebentar lagi.'
+    default:
+      return detail || `Terjadi kesalahan pada server (${status}).`
+  }
+}
+
+export const api = {
   async login(username: string, password: string): Promise<{ token: string; role: string }> {
     const { data } = await http.post('/auth/login', { username, password })
     return { token: data.access_token, role: data.role }
