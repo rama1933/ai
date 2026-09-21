@@ -13,9 +13,19 @@ CREATE TABLE IF NOT EXISTS users (
     CONSTRAINT users_role_check CHECK (role IN ('ADMIN', 'USER', 'READ_ONLY'))
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+    id         VARCHAR(100) PRIMARY KEY,
+    user_id    BIGINT       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      VARCHAR(200),
+    created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS chat_history (
     id         BIGSERIAL PRIMARY KEY,
-    session_id VARCHAR(100) NOT NULL,
+    session_id VARCHAR(100) NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role       VARCHAR(20)  NOT NULL,
     message    TEXT         NOT NULL,
     created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -31,6 +41,7 @@ CREATE TABLE IF NOT EXISTS documents (
     content      TEXT         NOT NULL,
     embedding    VECTOR(768),
     doc_metadata JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    user_id      BIGINT       REFERENCES users(id) ON DELETE SET NULL,
     created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -45,6 +56,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rag_app;
 
 -- SQL-tool role: read-only, and deliberately NOT on users (password hashes).
+-- `sessions` is excluded too, and on purpose: it holds conversation metadata, and the
+-- SQL tool's reach is treated as LLM-visible. Do not add it to the GRANT below.
 GRANT CONNECT ON DATABASE agentic_rag TO rag_readonly;
 GRANT USAGE ON SCHEMA public TO rag_readonly;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rag_readonly;
