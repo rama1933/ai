@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import DOMPurify from 'dompurify'
-import MarkdownIt from 'markdown-it'
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { refThrottled, useClipboard } from '@vueuse/core'
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
+
+import { renderMarkdown } from '../lib/markdown'
 
 import type { AttachmentRef } from '../services/api'
 import type { ChatMessage } from '../composables/useChat'
@@ -16,11 +17,25 @@ const emit = defineEmits<{ regenerate: [index: number]; saveEdit: [index: number
 
 const { objectUrl } = useAttachments()
 
-const md = new MarkdownIt({ linkify: true, breaks: true })
+// Streaming safety: partial markdown is re-parsed on every delta, so coalesce
+// to ~12fps. An unclosed fence renders as plain text until it closes.
+const throttledContent = refThrottled(computed(() => props.message.content), 80)
 
-// Model output is untrusted HTML once rendered; sanitize before v-html.
-const rendered = computed(() => DOMPurify.sanitize(md.render(props.message.content)))
+// Model output is untrusted HTML once rendered; renderMarkdown is the one
+// place the sanitiser config exists.
+const rendered = computed(() => renderMarkdown(throttledContent.value))
 const isUser = computed(() => props.message.role === 'user')
+
+const { copy } = useClipboard({ copiedDuring: 1500 })
+
+/** The copy buttons inside code blocks are rendered by v-html: delegate. */
+function onContentClick(event: MouseEvent): void {
+  const target = event.target as HTMLElement
+  const button = target.closest('.code-copy')
+  if (!button) return
+  const code = button.closest('.code-block')?.querySelector('code')
+  if (code) copy(code.textContent ?? '')
+}
 
 // Edit mode: the bubble becomes a textarea seeded with the current text;
 // saving hands the new text up to useChat, cancel restores.
@@ -170,6 +185,7 @@ function shortName(filename: string): string {
         v-if="!editing"
         class="rounded-bubble px-4 py-3 shadow-card"
         :class="isUser ? 'bg-primary text-primary-fg' : 'bg-surface text-fg ring-1 ring-border'"
+        @click="onContentClick"
       >
         <div class="md-body" v-html="rendered" />
       </div>

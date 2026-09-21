@@ -168,11 +168,80 @@
   }
 
   .md-body pre {
-    @apply overflow-x-auto rounded-xl border border-border bg-elevated p-3;
+    @apply m-0 overflow-x-auto rounded-b-none border-0 bg-elevated p-3;
   }
 
   .md-body pre code {
     @apply bg-transparent p-0 text-[0.8125rem];
+  }
+
+  /* Fenced code blocks: a bar with the language label and a copy button.
+     The copy button is rendered inside v-html, so styling lives here. */
+  .code-block {
+    @apply my-3 overflow-hidden rounded-xl border border-border bg-elevated;
+  }
+
+  .code-block:first-child {
+    @apply mt-0;
+  }
+
+  .code-block:first-child:last-child {
+    @apply mb-0;
+  }
+
+  .code-block-bar {
+    @apply flex items-center justify-between border-b border-border bg-surface/60 px-3 py-1.5;
+  }
+
+  .code-block-bar span {
+    @apply font-mono text-[10px] font-medium uppercase tracking-wider text-faint;
+  }
+
+  .code-block-bar .code-copy {
+    @apply cursor-pointer rounded-md px-2 py-0.5 text-[10px] font-medium text-subtle transition-colors hover:bg-elevated hover:text-fg;
+  }
+
+  /* highlight.js tokens, mapped to the theme's own palette so dark mode is
+     free. Registered languages: json, sql, python, bash, typescript, xml. */
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-section {
+    @apply text-accent-strong;
+  }
+
+  .hljs-string,
+  .hljs-attr,
+  .hljs-addition {
+    @apply text-success;
+  }
+
+  .hljs-comment,
+  .hljs-quote {
+    @apply italic text-faint;
+  }
+
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet {
+    @apply text-danger;
+  }
+
+  .hljs-title,
+  .hljs-name,
+  .hljs-type {
+    @apply font-semibold text-primary;
+  }
+
+  .hljs-built_in,
+  .hljs-variable,
+  .hljs-template-variable {
+    @apply text-accent;
+  }
+
+  .dark .hljs-string,
+  .dark .hljs-attr {
+    @apply text-success/90;
   }
 
   .md-body blockquote {
