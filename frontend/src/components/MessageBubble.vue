@@ -1,18 +1,59 @@
 <script setup lang="ts">
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
+import type { AttachmentRef } from '../services/api'
 import type { ChatMessage } from '../composables/useChat'
+import { useAttachments } from '../composables/useAttachments'
 import AppIcon from './AppIcon.vue'
+import AttachmentChip from './AttachmentChip.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
+
+const { objectUrl } = useAttachments()
 
 const md = new MarkdownIt({ linkify: true, breaks: true })
 
 // Model output is untrusted HTML once rendered; sanitize before v-html.
 const rendered = computed(() => DOMPurify.sanitize(md.render(props.message.content)))
 const isUser = computed(() => props.message.role === 'user')
+
+const attachments = computed(() => props.message.attachments ?? [])
+const imageAttachments = computed(() => attachments.value.filter((a) => a.kind === 'image'))
+const documentAttachments = computed(() => attachments.value.filter((a) => a.kind !== 'image'))
+
+// Thumbnails need an authed blob URL, fetched once per attachment -- but only
+// when there is no local preview: an optimistic bubble shows its own File and
+// the server row does not exist yet to serve the real one.
+const thumbs = ref<Record<string, string | null>>({})
+onMounted(async () => {
+  for (const attachment of imageAttachments.value) {
+    if (attachment.previewUrl) continue
+    thumbs.value[attachment.stored_name] = await objectUrl(attachment.stored_name)
+  }
+})
+
+function thumbFor(attachment: AttachmentRef): string | null {
+  return attachment.previewUrl ?? thumbs.value[attachment.stored_name] ?? null
+}
+
+// Full-size preview in a Dialog the library manages (focus trap, Esc).
+const previewing = ref<string | null>(null)
+const previewUrl = computed(() => (previewing.value ? (thumbs.value[previewing.value] ?? null) : null))
+const previewName = computed(() =>
+  previewing.value ? (attachments.value.find((a) => a.stored_name === previewing.value)?.display_name ?? '') : '',
+)
+
+async function download(attachment: AttachmentRef): Promise<void> {
+  const url = await objectUrl(attachment.stored_name)
+  if (!url) return
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = attachment.display_name
+  anchor.click()
+}
 
 // Which tool ran is the interesting part of an answer here, so it gets a label
 // a person can read rather than the raw function name.
@@ -60,6 +101,45 @@ function shortName(filename: string): string {
     </div>
 
     <div class="flex min-w-0 max-w-[85%] flex-col gap-2" :class="isUser ? 'items-end' : 'items-start'">
+      <div v-if="imageAttachments.length" class="flex flex-wrap gap-2">
+        <button
+          v-for="attachment in imageAttachments"
+          :key="attachment.stored_name"
+          type="button"
+          class="group relative h-20 w-20 cursor-zoom-in overflow-hidden rounded-xl bg-bg ring-1 ring-border transition-shadow hover:shadow-card"
+          :aria-label="`Lihat ${attachment.display_name}`"
+          :title="attachment.display_name"
+          @click="previewing = attachment.stored_name"
+        >
+          <img
+            v-if="thumbFor(attachment)"
+            :src="thumbFor(attachment)!"
+            :alt="attachment.display_name"
+            class="h-full w-full object-cover"
+          />
+          <div v-else class="grid h-full w-full place-items-center text-faint">
+            <AppIcon name="image" :size="18" />
+          </div>
+        </button>
+      </div>
+
+      <div
+        v-if="documentAttachments.length"
+        class="flex flex-wrap gap-1.5"
+        :class="isUser ? 'justify-end' : ''"
+      >
+        <AttachmentChip
+          v-for="attachment in documentAttachments"
+          :key="attachment.stored_name"
+          :name="attachment.display_name"
+          kind="document"
+          :mime="attachment.mime"
+          :size="attachment.size"
+          class="cursor-pointer transition-colors hover:border-primary/60"
+          @click="download(attachment)"
+        />
+      </div>
+
       <div
         class="rounded-bubble px-4 py-3 shadow-card"
         :class="isUser ? 'bg-primary text-primary-fg' : 'bg-surface text-fg ring-1 ring-border'"
@@ -99,5 +179,22 @@ function shortName(filename: string): string {
         </button>
       </div>
     </div>
+
+    <DialogRoot :open="previewing !== null" @update:open="(v) => (previewing = v ? previewing : null)">
+      <DialogPortal>
+        <DialogOverlay class="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm" />
+        <DialogContent
+          class="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 focus:outline-none"
+        >
+          <DialogTitle class="sr-only">{{ previewName }}</DialogTitle>
+          <img
+            v-if="previewUrl"
+            :src="previewUrl"
+            :alt="previewName"
+            class="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
+          />
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
   </div>
 </template>

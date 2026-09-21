@@ -18,8 +18,11 @@ describe('useChat', () => {
     vi.restoreAllMocks()
     localStorage.clear()
     // The session id now lives in the useSessions singleton; reset it so each
-    // test mints its own.
+    // test mints its own. jsdom's Blob cannot go through the real object-url
+    // functions, so stub them out.
     useSessions().activeId.value = null
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
   })
 
   it('accumulates deltas onto one assistant message, not several', async () => {
@@ -131,7 +134,7 @@ describe('useChat', () => {
     expect(spy.mock.calls[0][0].session_id).not.toBe(spy.mock.calls[1][0].session_id)
   })
 
-  it('attaches an uploaded image, clears it after sending, and passes it as a stored name', async () => {
+  it('attaches uploaded files, clears them after sending, and passes stored names', async () => {
     vi.spyOn(api, 'uploadFile').mockResolvedValue({
       filename: 'abc-struk.png',
       status: 'stored',
@@ -144,14 +147,49 @@ describe('useChat', () => {
     const spy = streamOf([{ type: 'done', answer: 'ok', tool_used: 'image_ocr', sources: [] }])
 
     const chat = useChat()
-    await chat.attach(new File(['x'], 'struk.png', { type: 'image/png' }))
-    expect(chat.pendingImage.value).toBe('abc-struk.png')
+    await chat.attach([new File(['x'], 'struk.png', { type: 'image/png' })])
+    expect(chat.pending.value).toHaveLength(1)
+    expect(chat.pending.value[0].storedName).toBe('abc-struk.png')
 
     chat.input.value = 'total berapa?'
     await chat.send()
 
     expect(spy.mock.calls[0][0].attachments).toEqual(['abc-struk.png'])
-    expect(chat.pendingImage.value).toBeNull()
+    expect(chat.pending.value).toHaveLength(0)
+  })
+
+  it('blocks send while an upload is in flight', async () => {
+    let resolveUpload: (value: Awaited<ReturnType<typeof api.uploadFile>>) => void = () => {}
+    vi.spyOn(api, 'uploadFile').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpload = resolve
+        }),
+    )
+    const spy = streamOf([{ type: 'done', answer: 'ok', tool_used: null, sources: [] }])
+
+    const chat = useChat()
+    void chat.attach([new File(['x'], 'slow.png', { type: 'image/png' })])
+    await vi.waitFor(() => expect(chat.hasUploading.value).toBe(true))
+
+    chat.input.value = 'halo'
+    await chat.send()
+    expect(spy).not.toHaveBeenCalled()
+
+    resolveUpload({
+      filename: 'abc-slow.png',
+      status: 'stored',
+      kind: 'image',
+      stored_name: 'abc-slow.png',
+      display_name: 'slow.png',
+      mime: 'image/png',
+      size: 1,
+    })
+    await vi.waitFor(() => expect(chat.hasUploading.value).toBe(false))
+
+    await chat.send()
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.calls[0][0].attachments).toEqual(['abc-slow.png'])
   })
 
   it('reuses the same session id across messages', async () => {

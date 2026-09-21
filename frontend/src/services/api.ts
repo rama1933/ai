@@ -15,6 +15,7 @@ export interface HistoryItem {
   id: number
   role: string
   message: string
+  attachments: AttachmentRef[]
   created_at: string
 }
 
@@ -24,6 +25,9 @@ export interface AttachmentRef {
   kind: 'image' | 'document'
   mime: string
   size: number
+  /** Client-only: a local object URL for the optimistic bubble, before the
+   * server row exists to serve the real thumbnail. */
+  previewUrl?: string | null
 }
 
 export interface SessionSummary {
@@ -203,6 +207,22 @@ export const api = {
 
   async deleteSession(sessionId: string): Promise<void> {
     await http.delete(`/sessions/${sessionId}`)
+  },
+
+  async fetchAttachmentBlob(storedName: string): Promise<Blob> {
+    // <img src> cannot carry the bearer token, so attachments are fetched like
+    // streamMessage is: with fetch and the header, bypassing axios.
+    const token = localStorage.getItem(TOKEN_KEY)
+    const base = http.defaults.baseURL ?? ''
+    const response = await fetch(`${base}/attachments/${encodeURIComponent(storedName)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (response.status === 401) {
+      await handleUnauthorized()
+      return new Blob()
+    }
+    if (!response.ok) throw new Error(`attachment failed (${response.status})`)
+    return response.blob()
   },
 
   /**

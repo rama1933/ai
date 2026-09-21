@@ -4,14 +4,17 @@ import {
   api,
   describeError,
   isNotFound,
+  type AttachmentRef,
   type SourceRef,
   type StreamEvent,
 } from '../services/api'
+import { useAttachments } from './useAttachments'
 import { useSessions } from './useSessions'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  attachments?: AttachmentRef[]
   toolUsed?: string | null
   sources?: SourceRef[]
 }
@@ -19,9 +22,9 @@ export interface ChatMessage {
 export function useChat() {
   // One active conversation across the app; the sidebar owns switching.
   const { activeId } = useSessions()
+  const { pending, hasUploading, readyNames, add, remove, clear, adopt } = useAttachments()
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
-  const pendingImage = ref<string | null>(null)
   const isLoading = ref(false) // request in flight, no token received yet
   const isStreaming = ref(false) // tokens are arriving; stop is available
   const error = ref<string | null>(null)
@@ -44,6 +47,7 @@ export function useChat() {
       messages.value = history.map((item) => ({
         role: item.role === 'user' ? 'user' : 'assistant',
         content: item.message,
+        attachments: item.attachments ?? [],
       }))
     } catch (err) {
       // A session id is generated client-side, so a brand-new conversation has no
@@ -59,29 +63,20 @@ export function useChat() {
   async function switchTo(): Promise<void> {
     messages.value = []
     input.value = ''
-    pendingImage.value = null
+    clear()
     error.value = null
     await loadHistory()
   }
 
-  async function attach(file: File): Promise<void> {
+  /** Upload files into the pending chip list; stored documents leave a note. */
+  async function attach(files: File[]): Promise<void> {
     error.value = null
-    isLoading.value = true
-    try {
-      const result = await api.uploadFile(file)
-      if (result.kind === 'image') {
-        pendingImage.value = result.filename
-      } else {
-        messages.value.push({
-          role: 'assistant',
-          content: `Dokumen **${result.filename}** sudah diproses dan masuk ke knowledge base.`,
-        })
-      }
-    } catch (err) {
-      error.value = describeError(err)
-    } finally {
-      isLoading.value = false
-    }
+    await add(files, (displayName) => {
+      messages.value.push({
+        role: 'assistant',
+        content: `Dokumen **${displayName}** sudah diproses dan masuk ke knowledge base.`,
+      })
+    })
   }
 
   function applyEvent(event: StreamEvent, assistant: ChatMessage): void {
@@ -104,7 +99,7 @@ export function useChat() {
   async function consume(sessionId: string, text: string, assistant: ChatMessage): Promise<unknown> {
     try {
       for await (const event of api.streamMessage(
-        { session_id: sessionId, message: text, attachments: pendingImage.value ? [pendingImage.value] : [] },
+        { session_id: sessionId, message: text, attachments: readyNames.value },
         controller!.signal,
       )) {
         // First byte arrived: swap the typing dots for the growing answer.
@@ -113,9 +108,9 @@ export function useChat() {
         if (event.type === 'error') return new Error(event.detail)
         applyEvent(event, assistant)
       }
-      // The attachment travelled with this message (a stopped stream keeps it
-      // server-side too), so the composer no longer holds it.
-      pendingImage.value = null
+      // The attachments travelled with this message (a stopped stream keeps
+      // them server-side too), so the composer no longer holds them.
+      clear()
       return null
     } catch (err) {
       if ((err as Error | null)?.name === 'AbortError') return null // stop() is deliberate
@@ -125,10 +120,21 @@ export function useChat() {
 
   async function send(): Promise<void> {
     const text = input.value.trim()
-    if (!text || isLoading.value || isStreaming.value) return
+    if (!text || isLoading.value || isStreaming.value || hasUploading.value) return
 
     error.value = null
-    messages.value.push({ role: 'user', content: text })
+    const attachments: AttachmentRef[] = pending.value
+      .filter((item) => item.status === 'ready' && item.storedName)
+      .map((item) => ({
+        stored_name: item.storedName as string,
+        display_name: item.displayName,
+        kind: item.mime.startsWith('image/') ? 'image' : 'document',
+        mime: item.mime,
+        size: item.size,
+        previewUrl: item.previewUrl,
+      }))
+    adopt(attachments.map((a) => a.previewUrl)) // the optimistic bubble owns them now
+    messages.value.push({ role: 'user', content: text, attachments })
     messages.value.push({ role: 'assistant', content: '' })
     // Index the reactive array rather than keeping the raw object pushed into
     // it: mutations on the raw object bypass the proxy and never re-render.
@@ -167,13 +173,15 @@ export function useChat() {
     sessionId: activeId,
     messages,
     input,
-    pendingImage,
+    pending,
+    hasUploading,
     isLoading,
     isStreaming,
     error,
     send,
     stop,
     attach,
+    removeAttachment: remove,
     loadHistory,
     switchTo,
   }

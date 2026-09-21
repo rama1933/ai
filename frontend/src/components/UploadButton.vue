@@ -4,14 +4,14 @@ import { ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 
 defineProps<{ disabled?: boolean }>()
-const emit = defineEmits<{ file: [File] }>()
+const emit = defineEmits<{ files: [File[]] }>()
 
 const inputRef = ref<HTMLInputElement | null>(null)
 
 function onChange(event: Event): void {
   const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (file) emit('file', file)
+  const files = Array.from(target.files ?? [])
+  if (files.length > 0) emit('files', files)
   target.value = '' // allow re-selecting the same file
 }
 </script>
@@ -29,6 +29,7 @@ function onChange(event: Event): void {
     <input
       ref="inputRef"
       type="file"
+      multiple
       class="hidden"
       accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md"
       @change="onChange"

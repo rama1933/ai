@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useEventListener, useMediaQuery, useScroll, useTextareaAutosize } from '@vueuse/core'
 
+import { useAttachments } from '../composables/useAttachments'
 import { useAuth } from '../composables/useAuth'
 import { useChat } from '../composables/useChat'
 import { useSessions } from '../composables/useSessions'
 import AppIcon from './AppIcon.vue'
+import AttachmentChip from './AttachmentChip.vue'
 import MessageBubble from './MessageBubble.vue'
 import SessionSidebar from './SessionSidebar.vue'
 import ThemeToggle from './ThemeToggle.vue'
@@ -14,21 +16,25 @@ import UploadButton from './UploadButton.vue'
 const {
   messages,
   input,
-  pendingImage,
+  pending,
+  hasUploading,
   isLoading,
   isStreaming,
   error,
   send,
   stop,
   attach,
+  removeAttachment,
   loadHistory,
   switchTo,
 } = useChat()
+const { revokeAll } = useAttachments()
 const { refresh: refreshSessions } = useSessions()
 const { logout } = useAuth()
 
 const scrollRef = ref<HTMLElement | null>(null)
 const drawerOpen = ref(false)
+const dragging = ref(false)
 
 // Grow the composer with its content; the class max-h-40 caps and scrolls it.
 // The returned ref is the live textarea element, reused for focusing below.
@@ -77,6 +83,9 @@ onMounted(async () => {
   scrollToBottom()
 })
 
+// Blob URLs are view-lifetime state; the chat owning them cleans them up.
+onUnmounted(() => revokeAll())
+
 function scrollToBottom(): void {
   const el = scrollRef.value
   if (!el) return
@@ -91,8 +100,26 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
+/** Screenshots and copied images arrive on the clipboard as files. */
+function onPaste(event: ClipboardEvent): void {
+  const files = Array.from(event.clipboardData?.files ?? [])
+  if (files.length > 0) {
+    event.preventDefault()
+    void attach(files)
+  }
+}
+
+function onDrop(event: DragEvent): void {
+  dragging.value = false
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  if (files.length > 0) {
+    event.preventDefault()
+    void attach(files)
+  }
+}
+
 async function submit(): Promise<void> {
-  if (!input.value.trim() || isLoading.value || isStreaming.value) return
+  if (!input.value.trim() || isLoading.value || isStreaming.value || hasUploading.value) return
   await send()
   void refreshSessions() // a first, client-minted session only exists server-side now
   void nextTick(() => textareaRef.value?.focus())
@@ -103,7 +130,9 @@ function useSuggestion(text: string): void {
   void nextTick(() => textareaRef.value?.focus())
 }
 
-const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value && !isStreaming.value)
+const canSend = computed(
+  () => input.value.trim().length > 0 && !isLoading.value && !isStreaming.value && !hasUploading.value,
+)
 </script>
 
 <template>
@@ -254,42 +283,69 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
             </button>
           </div>
 
+          <!-- Drop zone: a visible target over the composer while dragging. -->
           <div
-            v-if="pendingImage"
-            class="mb-2.5 inline-flex max-w-full items-center gap-2 rounded-xl border border-border bg-elevated px-3 py-1.5 text-xs text-subtle"
+            class="relative rounded-2xl transition-all duration-200"
+            :class="dragging ? 'ring-2 ring-primary ring-offset-2 ring-offset-bg' : ''"
+            @dragover.prevent="dragging = true"
+            @dragleave.prevent="dragging = false"
+            @drop="onDrop"
           >
-            <AppIcon name="image" :size="14" />
-            <span class="truncate">{{ pendingImage.replace(/^[0-9a-f]{32}-/, '') }}</span>
-            <span class="text-faint">siap dibaca</span>
-          </div>
+            <div
+              v-if="dragging"
+              class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-primary-soft/80 backdrop-blur-sm"
+            >
+              <p class="flex items-center gap-2 text-sm font-medium text-fg">
+                <AppIcon name="paperclip" :size="16" />
+                Lepaskan untuk melampirkan
+              </p>
+            </div>
 
-          <div
-            class="flex items-end gap-1.5 rounded-2xl border border-border-strong bg-surface p-1.5 shadow-card transition-colors focus-within:border-primary/80"
-          >
-            <UploadButton :disabled="isLoading" @file="attach" />
+            <div v-if="pending.length" class="mb-2.5 flex flex-wrap gap-2">
+              <AttachmentChip
+                v-for="item in pending"
+                :key="item.id"
+                :name="item.displayName"
+                :kind="item.mime.startsWith('image/') ? 'image' : 'document'"
+                :mime="item.mime"
+                :size="item.size"
+                :src="item.previewUrl"
+                :error="item.error"
+                :uploading="item.status === 'uploading'"
+                removable
+                @remove="removeAttachment(item.id)"
+              />
+            </div>
 
-            <label for="composer" class="sr-only">Tulis pertanyaan</label>
-            <textarea
-              id="composer"
-              ref="textareaRef"
-              v-model="input"
-              rows="1"
-              placeholder="Tulis pertanyaan…"
-              class="max-h-40 flex-1 resize-none self-center bg-transparent px-1 py-2 text-[0.9375rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
-              @keydown="onKeydown"
-            ></textarea>
+            <div
+              class="flex items-end gap-1.5 rounded-2xl border border-border-strong bg-surface p-1.5 shadow-card transition-colors focus-within:border-primary/80"
+            >
+              <UploadButton :disabled="isLoading || isStreaming" @files="attach" />
 
-          <button
-            type="button"
-            class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
-            :class="isStreaming ? 'bg-danger shadow-none' : ''"
-            :disabled="isStreaming ? false : !canSend"
-            :aria-label="isStreaming ? 'Hentikan jawaban' : 'Kirim pesan'"
-            :title="isStreaming ? 'Hentikan (Esc)' : 'Kirim pesan'"
-            @click="isStreaming ? stop() : submit()"
-          >
-            <AppIcon :name="isStreaming ? 'stop' : 'send'" :size="18" />
-          </button>
+              <label for="composer" class="sr-only">Tulis pertanyaan</label>
+              <textarea
+                id="composer"
+                ref="textareaRef"
+                v-model="input"
+                rows="1"
+                placeholder="Tulis pertanyaan…"
+                class="max-h-40 flex-1 resize-none self-center bg-transparent px-1 py-2 text-[0.9375rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
+                @keydown="onKeydown"
+                @paste="onPaste"
+              ></textarea>
+
+              <button
+                type="button"
+                class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
+                :class="isStreaming ? 'bg-danger shadow-none' : ''"
+                :disabled="isStreaming ? false : !canSend"
+                :aria-label="isStreaming ? 'Hentikan jawaban' : 'Kirim pesan'"
+                :title="isStreaming ? 'Hentikan (Esc)' : 'Kirim pesan'"
+                @click="isStreaming ? stop() : submit()"
+              >
+                <AppIcon :name="isStreaming ? 'stop' : 'send'" :size="18" />
+              </button>
+            </div>
           </div>
 
           <p class="mt-2 hidden text-center text-[11px] text-faint sm:block">
