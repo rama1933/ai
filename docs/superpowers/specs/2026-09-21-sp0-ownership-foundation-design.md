@@ -2,6 +2,15 @@
 
 **Status:** design, awaiting review
 **Date:** 2026-09-21
+**Verification:** five independent lenses (SQL execution, code-change completeness, test impact, frontend, security) raised 15 findings; the blocker and major ones were then handed to skeptics instructed to kill them. Five survived and are folded in above:
+
+- `test_models.py` is a second writer of `chat_history`, not just `routers/chat.py` (§8, §9).
+- `ingest_file` has three call sites, not one (§5, §6).
+- The SQL tool reads every user's `chat_history` regardless of ownership, so locking `GET /chat/history` alone would not have achieved this sub-project's goal (Decision 7).
+- The migration guard fails in both directions — it aborts on a second run once a second account exists, and waves through rows needing attribution when there are no users (§4).
+- `get_or_create_session` emits the `chat_history` INSERT before the `sessions` one, because the models declare no `relationship()` (§9).
+
+Each survivor was **reproduced**, not reasoned about — against scratch PostgreSQL databases (`sp0_*`, `fk_probe_sp0`), never against `agentic_rag` or `agentic_rag_test`. One finding — the missing `GRANT` on the new `sessions` table — was fixed while this verification was still in flight, so its skeptics read the corrected text and refuted it. The defect was real when raised; the refutation is an artifact of that race, and the fix stands on its own.
 **Parent decomposition:** SP1 conversation management · SP2 document management · SP3 account & settings · SP4 multi-user admin
 
 **Goal:** Give every stored row an owner, close the missing-authorization gap in `/chat/history`, and install the component system that SP1–SP3 will build their pages on — so that no later sub-project has to migrate these tables a second time.
@@ -78,6 +87,18 @@ Rejected: **Tailwind v4 migration** — a codemod plus a `style.css` rewrite on 
 
 `POST /chat` creates the session row on first message if it does not exist, owned by the caller. This keeps the existing client contract (frontend generates the id) and, more importantly, keeps `test_chat_endpoint.py` and `test_e2e_matrix.py` passing unmodified — they post arbitrary `session_id` values with no setup. `GET /chat/history` must not create rows, so it requires an existing owned session.
 
+### Decision 7 — `chat_history` leaves the SQL tool's allowlist (approved)
+
+`backend/config.py:27` reads `sql_tool_allowed_tables: list[str] = ["chat_history", "documents"]`, and the SQL tool is reachable from `POST /chat` by any authenticated user (`routers/chat.py:49-50` → `agent/registry.py:96-103`). Its validation (`tools/sql_tool.py`) constrains statement count, statement type, and table name, but carries **no user or session parameter**; `db/schema.sql:51` grants `rag_readonly` `SELECT` on `chat_history` with no row-level security; and `registry.py:96-103` returns rows to the model as `repr(rows)`.
+
+Ownership of `chat_history` cannot be enforced while that entry exists. A user asks a question, the model emits a `sql_query` call, and every user's conversations come back verbatim. This needs no jailbreak: `backend/tests/test_e2e_matrix.py:135` records the model emitting `sql_query` for the plain prompt *"Berapa jumlah baris pada tabel chat_history?"* and passing.
+
+Without Decision 7, SP0 fails its own goal — `GET /chat/history` would be locked while an equivalent read stays open through the agent. The cost is that the SQL tool can no longer answer questions about conversation history. That capability is at odds with making conversations private, so the loss is intended rather than tolerated. `documents` stays: the corpus is deliberately shared (Decision 3).
+
+**The change is three files, not one.** `config.py:27` is only a default; `backend/.env:20` and `backend/.env.example:20` both override it with `SQL_TOOL_ALLOWED_TABLES=["chat_history","documents"]`, and `config.py:34` sets `env_file=".env"`. Editing `config.py` alone changes nothing at runtime.
+
+Rejected: **row-level security scoped per user** — it preserves the capability, but needs an RLS policy, a per-request `app.current_user_id` plumbed through a SQLAlchemy connection event, and `FORCE ROW LEVEL SECURITY` (or a separate role), because RLS does not apply to a table's owner. That is a sub-project of its own, for a capability SP0 is deliberately giving up.
+
 ---
 
 ## 4. Schema changes
@@ -97,13 +118,25 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id, updated_at DESC);
 
--- Refuse to guess if the backfill would be ambiguous.
+-- Required. `GRANT ... ON ALL TABLES IN SCHEMA public` (db/schema.sql:44) was evaluated
+-- when schema.sql ran and covers only the tables that existed then, so it does not reach
+-- this new table. Without this line POST /chat dies with
+-- `permission denied for table sessions`, because the application connects as rag_app.
+GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO rag_app;
+
+-- Refuse to guess, but only when there is something to guess about. Counting the pending
+-- work keeps this a true no-op on a second run even after a second account exists, and it
+-- catches the reverse case -- rows needing attribution with no user to attribute them to --
+-- that a bare `n > 1` test waves through into a NOT NULL violation.
 DO $$
-DECLARE n INT;
+DECLARE n INT; pending INT;
 BEGIN
     SELECT count(*) INTO n FROM users;
-    IF n > 1 THEN
-        RAISE EXCEPTION 'backfill ambiguous: % users, expected exactly 1', n;
+    SELECT count(*) INTO pending FROM chat_history h
+        WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = h.session_id);
+    IF pending > 0 AND n <> 1 THEN
+        RAISE EXCEPTION 'backfill ambiguous: % unattributed sessions and % users, expected exactly 1 user',
+            pending, n;
     END IF;
 END $$;
 
@@ -141,7 +174,10 @@ Notes:
 - **`title` is nullable and stays null after backfill.** SP1's list endpoint falls back to the first user message when `title IS NULL`. Deriving titles during backfill would be speculative work for a rendering detail SP1 owns.
 - **`ON DELETE CASCADE` on `sessions.user_id`** — deleting a user removes their conversations, which cascades to `chat_history` through the new foreign key. This is intended: conversations are private.
 - **`ON DELETE SET NULL` on `documents.user_id`** — the corpus is shared, so removing a user must not destroy knowledge other users rely on. The uploader becomes unknown rather than the documents becoming garbage.
-- **The ambiguity guard is deliberate.** It is the one place where guessing could silently attribute one person's conversations to another. On this machine it cannot fire (one user), which is exactly why it costs nothing to keep.
+- **`rag_readonly` deliberately gets no access to `sessions`.** `db/schema.sql:50-51` is an allowlist — `REVOKE ALL ON ALL TABLES` then `GRANT SELECT ON chat_history, documents` — so the new table is excluded. That is the desired outcome: `sessions` carries conversation metadata, and §18 of the project spec treats everything the SQL tool can reach as LLM-visible. It is called out here because it is currently an incidental consequence of statement ordering rather than a stated decision, and a future reader could "fix" it by adding `sessions` to line 51.
+- **The guard tests pending work, not the user count alone.** A bare `n > 1` test would abort the second run on any database that has since gained a second account, even with nothing left to attribute — so "no-op on a second run" would quietly stop being true. It would also wave through the opposite case, rows needing attribution with zero users, and die on the `NOT NULL` constraint instead of refusing clearly. Checking both numbers closes both directions. It is the one place where guessing could silently attribute one person's conversations to another, and on this machine it cannot fire, which is exactly why it costs nothing to keep.
+- **`get_or_create_session` flushes explicitly, and the flush is load-bearing rather than stylistic.** `chat()` adds the `ChatHistory` row and calls a single `db.flush()`, so both INSERTs are pending in one unit of work. SQLAlchemy does **not** order them by the foreign key. Every edge in its topological sort comes from a `relationship()`; these models declare only a raw FK column, so the unit of work falls back to `Mapper._sort_key` (`sqlalchemy/orm/mapper.py:727`), which is `module.ClassName`. `models.ChatHistory` therefore sorts before `models.ChatSession`, the `chat_history` INSERT is emitted first, and the FK rejects it: `IntegrityError: insert or update on table "chat_history" violates foreign key constraint "chat_history_session_fk"`. `get_db` then rolls back, so the `sessions` row never persists and **every** message on that session id keeps failing, not just the first. An explicit `db.flush()` — or declaring a `relationship()` — fixes it. The flush is one line and costs one round trip on the first message of a session.
+  This was reproduced on PostgreSQL 17 with the migration's exact DDL, in both directions: without the flush the flush fails as above; with it, and with a `relationship()` added instead, both succeed.
 
 ---
 
@@ -170,6 +206,7 @@ def get_or_create_session(db: Session, session_id: str, user: User) -> ChatSessi
     if session is None:
         session = ChatSession(id=session_id, user_id=user.id)
         db.add(session)
+        db.flush()  # the chat_history FK needs this row present before its own INSERT is ordered
     elif session.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown session")
     session.updated_at = func.now()
@@ -188,9 +225,19 @@ def get_or_create_session(db: Session, session_id: str, user: User) -> ChatSessi
 
 Add `GET /auth/me`, returning `username`, `role`, and `created_at`. This is **not** stale-token handling — `frontend/src/services/api.ts:41` already clears the token and reloads on any non-auth 401. The value is that identity data currently reaches the frontend only as `role` from the login response; `username` and `created_at` have no source at all, and SP3 (profile, password change) and SP4 (user list) both need them.
 
-### `backend/services/document_service.py` and `backend/routers/documents.py`
+### `backend/services/document_service.py`, `backend/routers/documents.py`, `backend/routers/upload.py`
 
-`ingest_file(db, path)` at `document_service.py:54` gains a `user_id: int` parameter, passed through to the `Document(...)` construction at line 65. `routers/documents.py` passes `user.id`.
+`ingest_file(db, path)` at `document_service.py:54` gains a `user_id: int` parameter, passed through to the `Document(...)` construction at line 65. It has **three** call sites — two production, one test — and all three must be updated:
+
+- `backend/routers/documents.py:30` — the `POST /documents` route.
+- `backend/routers/upload.py:30` — inside the `if kind == "document":` branch of `POST /upload`. That route already has `user` from `Depends(get_current_user)` at line 19, so no new dependency is needed.
+- `backend/tests/test_document_service.py:56` — `document_service.ingest_file(db, target)`. A test call site, but it breaks the same way and counts toward §11 criterion 3.
+
+Missing the second one fails late and loudly rather than at review time: `upload.py:29-34` catches only `IngestError` and `EmbeddingError`, and `backend/main.py` registers no global exception handler, so the `TypeError` from the missing argument escapes as a 500. This is a live path — `frontend/src/components/UploadButton.vue:33` accepts `.png,.jpg,.jpeg,.webp,.pdf,.txt,.md` and sends the document kinds to `POST /upload` (`frontend/src/services/api.ts:112`).
+
+### `backend/config.py`, `backend/.env`, `backend/.env.example`
+
+`sql_tool_allowed_tables` becomes `["documents"]` in all three. `config.py:27` holds the default and `backend/.env:20` / `backend/.env.example:20` hold the override that actually wins — see Decision 7.
 
 ### `backend/schemas.py`
 
@@ -208,7 +255,7 @@ Add `UserResponse` (`username`, `role`, `created_at`).
 | `POST` | `/chat` | upserts its session, owned by the caller |
 | `GET` | `/chat/history` | now requires an owned session; 404 otherwise |
 | `POST` | `/documents` | records the uploader |
-| `POST` | `/upload` | unchanged |
+| `POST` | `/upload` | document-kind uploads now record the uploader |
 
 ---
 
@@ -238,9 +285,18 @@ Backend tests follow the existing convention in `backend/tests/test_auth.py:10-2
 | `test_auth_me_rejects_missing_token` | 401. |
 | `test_migration_001_is_idempotent` | `001_ownership.sql` applied twice: no error, row counts unchanged. |
 | `test_documents_record_uploader` | `ingest_file` persists `user_id`. |
-| existing suites | `test_chat_endpoint.py`, `test_e2e_matrix.py`, `test_auth.py` must pass **unmodified**. |
+| existing suites | `test_chat_endpoint.py` and `test_auth.py` must pass **unmodified**. |
+| `test_models.py`, `test_document_service.py` | must pass after the minimal edits below — *incidental* breakage. |
+| `test_e2e_matrix.py` | must pass after its SQL-over-`chat_history` case is rewritten — *deliberate* breakage, Decision 7. |
+| `test_sql_tool_cannot_reach_chat_history` | **new** — `chat_history` is rejected even when the model asks for it (Decision 7). |
 
-The last row is the load-bearing one. If any existing test needs editing to accommodate ownership, the upsert design in Decision 6 is wrong and should be revisited before proceeding.
+The first three rows are load-bearing, and the claim is deliberately narrower than in this spec's first draft. Two kinds of test edit are expected, and conflating them is what the first draft got wrong.
+
+**Incidental breakage.** `backend/tests/test_models.py:16-21` performs `db.add(ChatHistory(session_id="test-session", role="user", message="halo"))` followed by `db.flush()`, with no `sessions` row. The new foreign key rejects it: `ERROR: insert or update on table "chat_history" violates foreign key constraint "chat_history_session_fk"`. Separately, `backend/tests/test_document_service.py:56` calls `ingest_file(db, target)` and breaks on the new required parameter. Each fix is one line, and each is correct rather than regrettable — those tests were asserting against a schema that permitted orphan rows, and removing that permission is the point of the sub-project.
+
+**Deliberate breakage.** `backend/tests/test_e2e_matrix.py:135` currently proves the SQL tool *can* query `chat_history`. Decision 7 reverses that, so the case must be rewritten to assert the tool refuses. This is a behaviour change under test on purpose, not a regression.
+
+The tripwire concerns the **upsert design (Decision 6)** and nothing else. If `test_chat_endpoint.py` needs editing, or if a chat case in `test_e2e_matrix.py` breaks for a reason unrelated to Decision 7, then Decision 6 is wrong and should be revisited before proceeding. Changes in `test_models.py`, `test_document_service.py`, and the SQL-tool case say nothing about Decision 6. An earlier draft of this section did not draw that distinction and would have sent an implementer to dismantle the wrong decision.
 
 Frontend: `frontend/src/composables/__tests__/useChat.spec.ts` must still pass. Add a case covering `fetchMe()` populating `username` from the server response.
 
@@ -248,7 +304,7 @@ Frontend: `frontend/src/composables/__tests__/useChat.spec.ts` must still pass. 
 
 ## 9. Invariants and risks
 
-- **A `sessions` row must exist before any `chat_history` row.** The foreign key enforces this; `get_or_create_session` satisfies it. `routers/chat.py` is the only writer of `chat_history` today. Recorded as a comment in `models.py` because a future writer will otherwise discover it through a constraint violation.
+- **A `sessions` row must exist before any `chat_history` row.** The foreign key enforces this; `get_or_create_session` satisfies it. `routers/chat.py` is the only **production** writer of `chat_history`, but it is not the only writer: `backend/tests/test_models.py:16` inserts directly through the ORM with no parent session and must be updated (§8). Recorded as a comment in `models.py` because the next writer will otherwise learn this from a constraint violation.
 - **The migration assumes exactly one existing user.** It raises rather than guessing. Correct on this machine; it would need revisiting if the database ever holds more.
 - **`sessions.id` keeps the client-generated format.** A client chooses its own session id, so it can create sessions under any id it likes — but only its own, and only when the id is unused. Collision with another user's id yields 404. This is acceptable because ids are uuid4-derived, and it is the property that keeps existing tests green.
 - **No authorization change for documents.** RAG remains global by design; a user still retrieves chunks from documents they did not upload. That is the accepted consequence of Decision 3, not an oversight.
@@ -271,10 +327,11 @@ Frontend: `frontend/src/composables/__tests__/useChat.spec.ts` must still pass. 
 
 SP0 is done when all of the following hold, each demonstrated by a command whose output is pasted rather than recalled:
 
-1. `db/migrations/001_ownership.sql` applies cleanly to `agentic_rag` and is a no-op on a second run.
+1. `db/migrations/001_ownership.sql` applies cleanly to `agentic_rag`, is a no-op on a second run, and `POST /chat` then succeeds **as `rag_app`** — applying cleanly is not the same as the application role being able to write the new table.
 2. `agentic_rag_test` carries the same schema.
-3. The full backend suite passes, with `test_chat_endpoint.py` and `test_e2e_matrix.py` unmodified.
+3. The full backend suite passes, with `test_chat_endpoint.py` and `test_auth.py` unmodified and the three expected edits from §8 in place.
 4. A two-user isolation check returns 404 for the foreign session, both for `GET /chat/history` and `POST /chat`.
-5. `GET /auth/me` returns `username`, `role`, and `created_at`.
-6. `npm run build` succeeds and all six existing components render unchanged in light and dark mode.
-7. `docs/DONE.md` gains a row recording the isolation result.
+5. The agent refuses to read another user's conversations by **any** route. Concretely: a user asks the assistant to query `chat_history` through the SQL tool and is refused, not answered. This is the counterpart to criterion 4 — the endpoint check alone passed on the first draft of this spec, while the SQL tool stayed wide open (Decision 7).
+6. `GET /auth/me` returns `username`, `role`, and `created_at`.
+7. `npm run build` succeeds and all six existing components render unchanged in light and dark mode.
+8. `docs/DONE.md` gains rows recording both the isolation result and the SQL-tool refusal.
