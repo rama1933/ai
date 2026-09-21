@@ -1,8 +1,13 @@
+import json
+from contextlib import nullcontext
+
 import httpx
 import pytest
 
 from agent import orchestrator, registry
 from schemas import SourceRef
+
+_dumps = json.dumps
 
 
 def _reply(content: str = "", tool_calls: list | None = None) -> dict:
@@ -13,15 +18,35 @@ def _reply(content: str = "", tool_calls: list | None = None) -> dict:
 
 
 def _mock_ollama(monkeypatch, replies: list[dict]) -> list[dict]:
-    """Queue up successive /api/chat responses; returns the list of sent payloads."""
+    """Queue up successive /api/chat responses; returns the list of sent payloads.
+
+    Each queued response is served as one NDJSON line over a fake httpx.stream, so
+    the generator's line splitting stays under test. (It patched httpx.post before
+    the agent loop became a streaming generator; the transport is the only change.)
+    """
     sent: list[dict] = []
     queue = list(replies)
 
-    def fake_post(url, json, timeout):
+    def fake_stream(method, url, json=None, timeout=None, **kwargs):
         sent.append(json)
-        return httpx.Response(200, json=queue.pop(0), request=httpx.Request("POST", url))
+        body = (_dumps(queue.pop(0)) + "\n").encode()
+        return nullcontext(httpx.Response(200, content=body, request=httpx.Request(method, url)))
 
-    monkeypatch.setattr(orchestrator.httpx, "post", fake_post)
+    monkeypatch.setattr(orchestrator.httpx, "stream", fake_stream)
+    return sent
+
+
+def _mock_ollama_chunks(monkeypatch, turns: list[list[dict]]) -> list[dict]:
+    """Queue streaming turns; each turn is a list of chunk messages sent as NDJSON lines."""
+    sent: list[dict] = []
+    queue = list(turns)
+
+    def fake_stream(method, url, json=None, timeout=None, **kwargs):
+        sent.append(json)
+        body = "".join(_dumps({"message": chunk}) + "\n" for chunk in queue.pop(0)).encode()
+        return nullcontext(httpx.Response(200, content=body, request=httpx.Request(method, url)))
+
+    monkeypatch.setattr(orchestrator.httpx, "stream", fake_stream)
     return sent
 
 
@@ -67,7 +92,7 @@ def test_system_prompt_and_tools_are_sent_on_every_request(monkeypatch):
 
     payload = sent[0]
     assert payload["messages"][0]["role"] == "system"
-    assert payload["stream"] is False
+    assert payload["stream"] is True
     assert {t["function"]["name"] for t in payload["tools"]} == {"rag_search", "image_ocr", "sql_query"}
 
 
@@ -164,10 +189,122 @@ def test_tool_used_records_the_first_tool_of_a_multi_tool_turn(monkeypatch):
 
 
 def test_ollama_error_raises_agent_error(monkeypatch):
-    def fake_post(url, json, timeout):
-        return httpx.Response(500, text="boom", request=httpx.Request("POST", url))
+    def fake_stream(method, url, json=None, timeout=None, **kwargs):
+        return nullcontext(httpx.Response(500, text="boom", request=httpx.Request(method, url)))
 
-    monkeypatch.setattr(orchestrator.httpx, "post", fake_post)
+    monkeypatch.setattr(orchestrator.httpx, "stream", fake_stream)
 
     with pytest.raises(orchestrator.AgentError):
         orchestrator.run_agent(db=None, message="halo", history=[])
+
+
+def test_stream_plain_answer_yields_deltas_then_done(monkeypatch):
+    _mock_ollama_chunks(
+        monkeypatch,
+        [[{"role": "assistant", "content": "Berdasar"}, {"role": "assistant", "content": " dokumen: 5 tahun."}]],
+    )
+
+    events = list(orchestrator.stream_agent(db=None, message="berapa retensi?", history=[]))
+
+    deltas = [e["text"] for e in events if e["type"] == "delta"]
+    assert "".join(deltas) == "Berdasar dokumen: 5 tahun."
+    assert events[-1] == {
+        "type": "done",
+        "answer": "Berdasar dokumen: 5 tahun.",
+        "tool_used": None,
+        "sources": [],
+    }
+
+
+def test_stream_tool_turn_yields_tool_sources_then_deltas(monkeypatch):
+    _mock_ollama_chunks(
+        monkeypatch,
+        [
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "rag_search", "arguments": {"query": "retensi"}}}],
+                }
+            ],
+            [{"role": "assistant", "content": "Masa retensi"}, {"role": "assistant", "content": " 5 tahun."}],
+        ],
+    )
+    monkeypatch.setattr(
+        registry, "dispatch",
+        lambda name, arguments, db, image_path: registry.ToolOutcome(
+            text="[policy.pdf] retensi 5 tahun", sources=[SourceRef(filename="policy.pdf", score=0.9)]
+        ),
+    )
+
+    events = list(orchestrator.stream_agent(db=None, message="berapa lama masa retensi?", history=[]))
+
+    types = [e["type"] for e in events]
+    assert types[0] == "tool"
+    assert types.index("tool") < types.index("sources") < types.index("delta")
+    assert events[1]["sources"][0].filename == "policy.pdf"
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["answer"] == "Masa retensi 5 tahun."
+    assert done["tool_used"] == "rag_search"
+    assert done["sources"][0].filename == "policy.pdf"
+
+
+def test_stream_tool_call_blob_is_never_streamed_as_text(monkeypatch):
+    """The JSON-leak guard: a tool call written as prose must not flash as deltas."""
+    blob = '{"name":"sql_query","parameters":{"query":"SELECT 1"}}'
+    _mock_ollama_chunks(
+        monkeypatch,
+        [
+            [{"role": "assistant", "content": blob[:6]}, {"role": "assistant", "content": blob[6:]}],
+            [{"role": "assistant", "content": "Ada 1 dokumen."}],
+        ],
+    )
+    dispatched: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        registry, "dispatch",
+        lambda name, arguments, db, image_path: (
+            dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
+        ),
+    )
+
+    events = list(orchestrator.stream_agent(db=None, message="berapa dokumen ada?", history=[]))
+
+    deltas = "".join(e["text"] for e in events if e["type"] == "delta")
+    assert deltas == "Ada 1 dokumen."  # not one character of the blob leaked
+    assert dispatched == [("sql_query", {"query": "SELECT 1"})]
+    assert events[-1]["answer"] == "Ada 1 dokumen."
+    assert events[-1]["tool_used"] == "sql_query"
+
+
+def test_stream_legitimate_json_answer_is_still_delivered(monkeypatch):
+    """An answer that starts with '{' but is not a tool call must still reach the user."""
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": '{"hasil": "12 dokumen"}'}]])
+
+    events = list(orchestrator.stream_agent(db=None, message="berapa?", history=[]))
+
+    deltas = "".join(e["text"] for e in events if e["type"] == "delta")
+    assert deltas == '{"hasil": "12 dokumen"}'
+    assert events[-1]["answer"] == '{"hasil": "12 dokumen"}'
+    assert events[-1]["tool_used"] is None
+
+
+def test_stream_exhausted_loop_yields_give_up_done(monkeypatch):
+    loop = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "rag_search", "arguments": {"query": "x"}}}],
+        }
+    ]
+    _mock_ollama_chunks(monkeypatch, [loop] * 10)
+    monkeypatch.setattr(
+        registry, "dispatch", lambda name, arguments, db, image_path: registry.ToolOutcome(text="nothing")
+    )
+
+    events = list(orchestrator.stream_agent(db=None, message="loop", history=[]))
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert "tidak dapat" in done["answer"].lower() or "could not" in done["answer"].lower()
+    assert done["tool_used"] == "rag_search"

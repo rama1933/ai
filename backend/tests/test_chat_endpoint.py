@@ -40,7 +40,7 @@ def test_chat_returns_answer_tool_and_sources(client, auth_headers, session_id, 
 
     monkeypatch.setattr(
         chat_router, "run_agent",
-        lambda db, message, history, image_path: AgentResult(
+        lambda db, message, history, image_paths: AgentResult(
             answer="Masa retensi 5 tahun.",
             tool_used="rag_search",
             sources=[SourceRef(filename="policy.pdf", score=0.9)],
@@ -63,7 +63,7 @@ def test_chat_persists_user_and_assistant_turns(client, auth_headers, session_id
 
     monkeypatch.setattr(
         chat_router, "run_agent",
-        lambda db, message, history, image_path: AgentResult(answer="hai", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths: AgentResult(answer="hai", tool_used=None, sources=[]),
     )
     client.post("/chat", headers=auth_headers, json={"session_id": session_id, "message": "halo"})
 
@@ -80,7 +80,7 @@ def test_chat_passes_prior_history_to_the_agent(client, auth_headers, session_id
 
     captured = {}
 
-    def fake_agent(db, message, history, image_path):
+    def fake_agent(db, message, history, image_paths):
         captured["history"] = history
         return AgentResult(answer="ok", tool_used=None, sources=[])
 
@@ -106,7 +106,8 @@ def test_chat_returns_503_when_ollama_is_unreachable(client, auth_headers, sessi
     def refuse(*args, **kwargs):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(orchestrator.httpx, "post", refuse)
+    # The agent loop streams over httpx.stream since the SP1 generator refactor.
+    monkeypatch.setattr(orchestrator.httpx, "stream", refuse)
 
     response = client.post("/chat", headers=auth_headers, json={"session_id": session_id, "message": "halo"})
 
@@ -140,7 +141,7 @@ def test_history_endpoint_returns_turns_in_order(client, auth_headers, session_i
 
     monkeypatch.setattr(
         chat_router, "run_agent",
-        lambda db, message, history, image_path: AgentResult(answer="jawab", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths: AgentResult(answer="jawab", tool_used=None, sources=[]),
     )
     client.post("/chat", headers=auth_headers, json={"session_id": session_id, "message": "tanya"})
 

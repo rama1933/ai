@@ -33,6 +33,7 @@ def chat(
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
     image_path = _resolve_image(payload.image_path)
+    image_paths = [image_path] if image_path else []
     get_or_create_session(db, payload.session_id, user)
 
     prior = (
@@ -48,7 +49,7 @@ def chat(
     db.flush()
 
     try:
-        result = run_agent(db=db, message=payload.message, history=history, image_path=image_path)
+        result = run_agent(db=db, message=payload.message, history=history, image_paths=image_paths)
     except AgentError as exc:
         raise HTTPException(status_code=503, detail=f"local LLM unavailable: {exc}") from exc
 

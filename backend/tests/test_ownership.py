@@ -90,7 +90,7 @@ def quiet_agent(monkeypatch):
     monkeypatch.setattr(
         chat_router,
         "run_agent",
-        lambda db, message, history, image_path: AgentResult(answer="ok", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths: AgentResult(answer="ok", tool_used=None, sources=[]),
     )
 
 
