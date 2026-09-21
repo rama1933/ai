@@ -47,17 +47,17 @@ def test_sql_query_rejects_data_modifying_ctes(query):
 
 
 def test_sql_query_allows_keyword_substrings():
-    rows = sql_tool.sql_query("SELECT count(*) AS update_count FROM chat_history")
+    rows = sql_tool.sql_query("SELECT count(*) AS update_count FROM documents")
     assert isinstance(rows, list)
     assert "update_count" in rows[0]
 
 
 def test_sql_query_returns_rows_as_dicts():
-    rows = sql_tool.sql_query("SELECT count(*) AS total FROM chat_history")
+    rows = sql_tool.sql_query("SELECT count(*) AS total FROM documents")
     assert isinstance(rows, list)
     assert "total" in rows[0]
 
 
 def test_sql_query_caps_row_count():
-    rows = sql_tool.sql_query("SELECT generate_series(1, 500) AS n FROM chat_history LIMIT 500", max_rows=10)
+    rows = sql_tool.sql_query("SELECT generate_series(1, 500) AS n FROM documents LIMIT 500", max_rows=10)
     assert len(rows) <= 10

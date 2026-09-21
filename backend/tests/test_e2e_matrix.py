@@ -132,8 +132,12 @@ def test_ocr_001_image_question_uses_ocr(client, auth):
     assert "43000" in body["answer"].replace(".", "").replace(",", "")
 
 
-def test_sql_001_statistics_question_uses_sql(client, auth):
-    body = _ask(client, auth, "Berapa jumlah baris pada tabel chat_history?")
+def test_sql_001_statistics_question_uses_sql(client, auth, ingested_policy):
+    """The SQL tool reaches the shared corpus. It deliberately cannot reach
+    chat_history -- see docs/superpowers/specs/2026-09-21-sp0-ownership-foundation-design.md,
+    Decision 7. The fixture is requested so the table is non-empty and a count is meaningful.
+    """
+    body = _ask(client, auth, "Berapa jumlah baris pada tabel documents?")
     assert body["tool_used"] == "sql_query"
     assert any(ch.isdigit() for ch in body["answer"])
 

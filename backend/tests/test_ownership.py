@@ -174,6 +174,25 @@ def test_auth_me_rejects_missing_token(client):
     assert client.get("/auth/me").status_code == 401
 
 
+def test_sql_tool_cannot_reach_chat_history():
+    """The agent must not be able to read conversations through the SQL tool.
+
+    Without this, locking GET /chat/history would not make conversations private:
+    any authenticated user can ask the assistant to query the table instead.
+    """
+    from tools.sql_tool import SqlRejected, sql_query
+
+    with pytest.raises(SqlRejected, match="not allowed"):
+        sql_query("SELECT session_id, message FROM chat_history LIMIT 5")
+
+
+def test_sql_tool_still_reaches_documents():
+    """The corpus stays shared by design, so documents must remain queryable."""
+    from tools.sql_tool import sql_query
+
+    assert isinstance(sql_query("SELECT filename FROM documents LIMIT 1"), list)
+
+
 def test_upload_records_uploader(client, two_users, tmp_path, monkeypatch):
     """POST /upload is the path most uploads take, so provenance is checked there
     rather than only on POST /documents."""

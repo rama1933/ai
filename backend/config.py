@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
-    sql_tool_allowed_tables: list[str] = ["chat_history", "documents"]
+    sql_tool_allowed_tables: list[str] = ["documents"]
     sql_tool_timeout_ms: int = 3000
 
     agent_max_iterations: int = 5
