@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a fully local Agentic RAG assistant where an Ollama-hosted LLM picks between three tools (document RAG over pgvector, image OCR via PaddleOCR, read-only SQL over PostgreSQL) and answers through a FastAPI backend with a Vue 3 chat UI.
+**Goal:** Build a fully local Agentic RAG assistant where an Ollama-hosted LLM picks between three tools (document RAG over pgvector, image OCR via RapidOCR, read-only SQL over PostgreSQL) and answers through a FastAPI backend with a Vue 3 chat UI.
 
 **Architecture:** FastAPI is the only HTTP surface. A thin agent orchestrator calls Ollama's native `/api/chat` tool-calling loop (no LangChain) — the model emits `tool_calls`, we dispatch them against a registry, feed results back as `role: "tool"` messages, and stop when the model returns a plain answer or hits an iteration cap. Persistence is one PostgreSQL database: relational tables plus a `documents` table whose `embedding VECTOR(768)` column is indexed by pgvector HNSW. Everything (Postgres, pgvector, Ollama) runs natively via Homebrew — no Docker on this machine.
 
-**Tech Stack:** Python 3.10, FastAPI, Uvicorn, SQLAlchemy 2.0 (sync), pydantic-settings, psycopg2, pgvector, PaddleOCR, pypdf, httpx, PyJWT, passlib[bcrypt], pytest; Vue 3 + TypeScript + Vite + TailwindCSS + Axios + markdown-it, Vitest.
+**Tech Stack:** Python 3.10, FastAPI, Uvicorn, SQLAlchemy 2.0 (sync), pydantic-settings, psycopg2, pgvector, RapidOCR, pypdf, httpx, PyJWT, passlib[bcrypt], pytest; Vue 3 + TypeScript + Vite + TailwindCSS + Axios + markdown-it, Vitest.
 
 **Spec:** `docs/spec/agentic-rag-spec.md` (verbatim copy of https://github.com/wisnu45/ai-engineer README)
 
@@ -15,7 +15,8 @@
 - Python interpreter is `/opt/homebrew/bin/python3.10` — the bare `python3` on this machine is shadowed by a shell function and must not be used. All venv creation uses the absolute path.
 - No Docker and no Docker Compose. The spec's §21/§22 Docker sections are explicitly **out of scope**; infra is Homebrew services.
 - No LangChain, no LlamaIndex. The spec's §4.2 "Agent Framework: LangChain" is replaced by Ollama native tool-calling (`/api/chat` with a `tools` array).
-- LLM model is `llama3.1:8b`, not `llama3`. Plain `llama3` has no tool-calling support in Ollama and the agent loop will silently never emit `tool_calls`.
+- LLM model is `llama3.2:3b`. Plain `llama3` has no tool-calling support in Ollama and the agent loop would silently never emit `tool_calls`. `llama3.1:8b` routes tools noticeably better, but its 4.9 GB weights are the largest single disk cost in this plan; Task 1's tool-calling gate is the decision point — if `llama3.2:3b` fails it, free disk and switch the model, which is one env var (`OLLAMA_LLM_MODEL`) in one file.
+- Disk is a binding constraint on this machine (~8.6 GB free, no external volume). Any step that installs or downloads runs `df -h /System/Volumes/Data` before and after and reports the delta. Filling the boot volume below ~1 GB destabilizes macOS — stop and report rather than pushing on.
 - Embedding model is `nomic-embed-text`, dimension **768**. The `VECTOR(768)` in `db/schema.sql` and `Settings.embedding_dim` must always agree; changing the model means a schema migration.
 - The SQL tool connects as PostgreSQL role `rag_readonly`, which holds `SELECT` on `chat_history` and `documents` only. It must never be granted anything on `users`.
 - Retrieved document text and OCR output are **untrusted data**, never instructions. They are always wrapped in a delimiter block before entering the prompt (spec §18, Prompt Injection).
@@ -62,7 +63,7 @@ ai/
 │   │
 │   ├── tools/
 │   │   ├── rag_tool.py                      # similarity search over pgvector
-│   │   ├── ocr_tool.py                      # PaddleOCR wrapper
+│   │   ├── ocr_tool.py                      # RapidOCR (ONNX) wrapper
 │   │   └── sql_tool.py                      # read-only guarded SQL
 │   │
 │   ├── agent/
@@ -113,7 +114,7 @@ Boundary rules this structure locks in:
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a running PostgreSQL 16 with pgvector on `localhost:5432`; databases `agentic_rag` and `agentic_rag_test`; roles `rag_app` (owner-level DML) and `rag_readonly` (SELECT on `chat_history`, `documents`); a running Ollama on `localhost:11434` with models `llama3.1:8b` and `nomic-embed-text`; `python scripts/check_infra.py` exits 0 when all of that holds.
+- Produces: a running PostgreSQL 16 with pgvector on `localhost:5432`; databases `agentic_rag` and `agentic_rag_test`; roles `rag_app` (owner-level DML) and `rag_readonly` (SELECT on `chat_history`, `documents`); a running Ollama on `localhost:11434` with models `llama3.2:3b` and `nomic-embed-text`; `python scripts/check_infra.py` exits 0 when all of that holds.
 
 - [ ] **Step 1: Initialize the repository**
 
@@ -127,11 +128,11 @@ git commit -m "chore: add agentic rag spec"
 - [ ] **Step 2: Install PostgreSQL 16, pgvector, and Ollama**
 
 ```bash
-brew install postgresql@16 pgvector ollama
-brew services start postgresql@16
+brew install postgresql@17 pgvector ollama
+brew services start postgresql@17
 brew services start ollama
-echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc
-export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"
+# postgresql@17 is keg-only: use absolute paths, or add /opt/homebrew/opt/postgresql@17/bin to PATH yourself.
+export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
 ```
 
 Wait for Postgres to accept connections:
@@ -143,18 +144,18 @@ until pg_isready -h localhost -p 5432; do sleep 1; done
 - [ ] **Step 3: Pull the Ollama models**
 
 ```bash
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ollama pull nomic-embed-text
 ollama list
 ```
 
-Expected: both models listed. `llama3.1:8b` is ~4.9 GB, `nomic-embed-text` ~274 MB.
+Expected: both models listed. `llama3.2:3b` is ~4.9 GB, `nomic-embed-text` ~274 MB.
 
 Verify tool-calling capability is actually present — this is the assumption the whole agent rests on:
 
 ```bash
 curl -s http://localhost:11434/api/chat -d '{
-  "model": "llama3.1:8b",
+  "model": "llama3.2:3b",
   "stream": false,
   "messages": [{"role": "user", "content": "What is 7 times 6? Use the calculator tool."}],
   "tools": [{"type": "function", "function": {
@@ -266,7 +267,7 @@ import json
 import subprocess
 
 OLLAMA = "http://localhost:11434"
-REQUIRED_MODELS = {"llama3.1:8b", "nomic-embed-text"}
+REQUIRED_MODELS = {"llama3.2:3b", "nomic-embed-text"}
 DATABASES = ("agentic_rag", "agentic_rag_test")
 
 failures: list[str] = []
@@ -397,7 +398,7 @@ pytest==8.3.4
 .venv/bin/pip install -r backend/requirements.txt
 ```
 
-PaddleOCR is deliberately not here — it is a heavy, install-risky dependency and gets its own step in Task 8.
+PaddleOCR and PaddlePaddle are deliberately not here — they are ~2 GB of wheels and get their own step in Task 8, which uses the ONNX engine instead.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -470,7 +471,7 @@ class Settings(BaseSettings):
     database_url_readonly: str
 
     ollama_base_url: str = "http://localhost:11434"
-    ollama_llm_model: str = "llama3.1:8b"
+    ollama_llm_model: str = "llama3.2:3b"
     ollama_embedding_model: str = "nomic-embed-text"
     embedding_dim: int = 768
 
@@ -551,7 +552,7 @@ DATABASE_URL=postgresql+psycopg2://rag_app:rag_app_pw@localhost:5432/agentic_rag
 DATABASE_URL_READONLY=postgresql+psycopg2://rag_readonly:rag_readonly_pw@localhost:5432/agentic_rag
 
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_LLM_MODEL=llama3.1:8b
+OLLAMA_LLM_MODEL=llama3.2:3b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIM=768
 
@@ -1520,26 +1521,19 @@ git commit -m "feat: validate uploads by extension, mime, size, and signature"
 - [ ] **Step 1: Install the OCR dependency**
 
 ```bash
-.venv/bin/pip install "paddlepaddle==3.0.0" "paddleocr==2.9.1"
+.venv/bin/pip install "rapidocr-onnxruntime==1.4.4"
+.venv/bin/python -c "from rapidocr_onnxruntime import RapidOCR; RapidOCR(); print('RapidOCR ready')"
 ```
 
-Verify the wheel actually loads on this machine (Apple Silicon wheels for paddlepaddle have historically been the flakiest part of this stack):
+Expected: `RapidOCR ready`. Constructing the engine pulls in onnxruntime, opencv-python, and numpy, so a clean run also proves those wheels are sound on this machine.
 
-```bash
-.venv/bin/python -c "import paddle; paddle.utils.run_check()"
+This plan uses the ONNX engine rather than PaddleOCR. PaddlePaddle's wheel set is ~2 GB against ~8.6 GB of free disk, which would spend most of the remaining headroom for no gain — `image_ocr(path) -> str` is the same surface either way, and `registry.py` never learns which engine won.
+
+Append to `backend/requirements.txt`:
+
+```text
+rapidocr-onnxruntime==1.4.4
 ```
-
-Expected: `PaddlePaddle is installed successfully!`
-
-If installation or `run_check` fails, fall back to the ONNX runtime OCR engine, which needs no paddlepaddle:
-
-```bash
-.venv/bin/pip install rapidocr-onnxruntime==1.4.4
-```
-
-and implement `_engine()` in Step 3 with `RapidOCR()` instead. The `image_ocr(path) -> str` signature does not change, so nothing downstream cares which engine won.
-
-Append the engine you chose to `backend/requirements.txt`.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1556,24 +1550,30 @@ def test_image_ocr_joins_recognized_lines(monkeypatch, tmp_path):
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
 
     class FakeEngine:
-        def ocr(self, path, cls=True):
-            return [[
-                [[[0, 0], [1, 0], [1, 1], [0, 1]], ("TOKO MAJU", 0.99)],
-                [[[0, 2], [1, 2], [1, 3], [0, 3]], ("TOTAL 150000", 0.97)],
-            ]]
+        """Mirrors RapidOCR: engine(path) -> (lines, elapsed),
+        where lines is [[box_points, text, confidence], ...]."""
+
+        def __call__(self, path):
+            return (
+                [
+                    [[[0, 0], [1, 0], [1, 1], [0, 1]], "TOKO MAJU", 0.99],
+                    [[[0, 2], [1, 2], [1, 3], [0, 3]], "TOTAL 150000", 0.97],
+                ],
+                [0.11, 0.02],
+            )
 
     monkeypatch.setattr(ocr_tool, "_engine", lambda: FakeEngine())
 
     assert ocr_tool.image_ocr(str(image)) == "TOKO MAJU\nTOTAL 150000"
 
 
-def test_image_ocr_returns_marker_when_nothing_recognized(monkeypatch, tmp_path):
+def test_image_ocr_returns_empty_when_nothing_recognized(monkeypatch, tmp_path):
     image = tmp_path / "blank.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
 
     class EmptyEngine:
-        def ocr(self, path, cls=True):
-            return [None]
+        def __call__(self, path):
+            return (None, [0.01])
 
     monkeypatch.setattr(ocr_tool, "_engine", lambda: EmptyEngine())
 
@@ -1641,10 +1641,10 @@ class OcrError(RuntimeError):
 
 @lru_cache
 def _engine():
-    """PaddleOCR loads models on first construction (~seconds), so build once."""
-    from paddleocr import PaddleOCR
+    """RapidOCR builds its ONNX sessions on first construction (~seconds), so build once."""
+    from rapidocr_onnxruntime import RapidOCR
 
-    return PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+    return RapidOCR()
 
 
 def image_ocr(image_path: str) -> str:
@@ -1657,13 +1657,13 @@ def image_ocr(image_path: str) -> str:
     if not path.is_file():
         raise OcrError(f"image not found: {image_path}")
 
-    result = _engine().ocr(str(path), cls=True)
-    if not result or result[0] is None:
+    raw = _engine()(str(path))
+    # RapidOCR returns (lines, elapsed); lines is [[box_points, text, confidence], ...] or None.
+    lines = raw[0] if isinstance(raw, tuple) else raw
+    if not lines:
         return ""
-    return "\n".join(line[1][0] for line in result[0])
+    return "\n".join(line[1] for line in lines)
 ```
-
-If the RapidOCR fallback was taken in Step 1, `_engine()` becomes `from rapidocr_onnxruntime import RapidOCR; return RapidOCR()` and the join becomes `"\n".join(line[1] for line in result[0])` — adjust the fake engines in the tests to match the shape you use.
 
 - [ ] **Step 5: Write the upload router**
 
@@ -1734,7 +1734,7 @@ Expected: the text visible in the image. Put a real receipt or screenshot throug
 
 ```bash
 git add backend/tools/ocr_tool.py backend/routers/upload.py backend/requirements.txt backend/main.py backend/tests/test_ocr_tool.py backend/tests/test_upload_endpoint.py
-git commit -m "feat: add paddleocr tool and upload endpoint"
+git commit -m "feat: add ocr tool and upload endpoint"
 ```
 
 ---
@@ -3694,7 +3694,7 @@ img.save('receipt.png')
 "
 ```
 
-(`pillow` comes in with paddleocr; if the OCR fallback was taken, `pip install pillow`.)
+(`pillow` is not a dependency of rapidocr-onnxruntime; run `.venv/bin/pip install pillow` if it is missing.)
 
 - [ ] **Step 2: Write the matrix tests**
 
@@ -3910,7 +3910,7 @@ Create `README.md`:
 ````markdown
 # Agentic RAG — Local AI System
 
-Local Agentic RAG assistant: FastAPI + PostgreSQL/pgvector + PaddleOCR + Ollama + Vue 3.
+Local Agentic RAG assistant: FastAPI + PostgreSQL/pgvector + RapidOCR + Ollama + Vue 3.
 The LLM picks between three tools — document search, image OCR, and read-only SQL.
 
 Spec: `docs/spec/agentic-rag-spec.md` · Plan: `docs/superpowers/plans/`
@@ -3922,10 +3922,10 @@ macOS with Homebrew. No Docker needed.
 ## Setup
 
 ```bash
-brew install postgresql@16 pgvector ollama
-brew services start postgresql@16
+brew install postgresql@17 pgvector ollama
+brew services start postgresql@17
 brew services start ollama
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ollama pull nomic-embed-text
 
 createdb agentic_rag && createdb agentic_rag_test
@@ -3986,7 +3986,7 @@ See spec §25 for the roadmap beyond MVP.
 - [ ] **Step 3: Verify the script works from a cold start**
 
 ```bash
-brew services restart postgresql@16
+brew services restart postgresql@17
 ./scripts/dev.sh
 ```
 
@@ -4096,7 +4096,8 @@ git add docs/DONE.md && git commit -m "docs: record definition-of-done verificat
 |---|---|---|
 | §4.2 Agent Framework: LangChain | Ollama native `/api/chat` tool-calling | Three tools do not need an agent framework; the loop is ~60 lines and has no version-drift surface. |
 | §12/§22 Docker, docker-compose | Homebrew services | This machine has no Docker. Postgres, pgvector, and Ollama all have first-class Homebrew formulas. |
-| §12 LLM model `llama3` | `llama3.1:8b` | Plain `llama3` has no tool-calling support in Ollama; the agent would never emit `tool_calls`. |
+| §12 LLM model `llama3` | `llama3.2:3b` | Plain `llama3` has no tool-calling support in Ollama; the agent would never emit `tool_calls`. `llama3.1:8b` routes tools better but its 4.9 GB weights do not fit alongside the rest of this stack — Task 1's gate decides whether to upgrade. |
+| §4.2 OCR: PaddleOCR | `rapidocr-onnxruntime` | PaddlePaddle's wheels are ~2 GB; the ONNX engine is ~150 MB behind an identical `image_ocr(path) -> str` surface. |
 | §7.2 column `metadata` | column `doc_metadata` | `metadata` is reserved on SQLAlchemy's declarative base and raises at import time. |
 | §3.2 frontend "React / Vue" | Vue 3 + TypeScript | Chosen by the user. |
 | §8 Tool 2 OCR takes `image_path` from the model | path comes from the authenticated request | A model-chosen file path is an arbitrary-file-read primitive. The tool schema takes no arguments. |
