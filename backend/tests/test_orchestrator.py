@@ -331,3 +331,10 @@ def test_stream_agent_threads_document_filenames_to_dispatch(monkeypatch):
     list(orchestrator.stream_agent(db=None, message="tanya", history=[], document_filenames=["abc-laporan.pdf"]))
 
     assert captured["document_filenames"] == ["abc-laporan.pdf"]
+
+
+def test_system_prompt_pins_the_context_only_guardrail():
+    """The anti-off-context instruction is load-bearing against hallucinated
+    summaries; if someone trims it, this fails instead of the users."""
+    assert "HANYA berdasarkan isi blok UNTRUSTED_DATA" in orchestrator.SYSTEM_PROMPT
+    assert "jangan membuat ringkasan umum" in orchestrator.SYSTEM_PROMPT
