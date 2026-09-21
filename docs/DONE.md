@@ -28,7 +28,7 @@ Where a row holds only under a stated scope limit, the limit is written into the
 | 12 | Frontend | Upload dokumen | **PASS** |
 | 13 | Frontend | Response AI tampil | **PASS** (scope: served modules + a direct render, no browser) |
 | 14 | Frontend | Loading state | **PASS** (scope: served module + a direct render, no browser) |
-| 15 | Frontend | Error handling | **FAIL** — 500, not the specified 503 |
+| 15 | Frontend | Error handling | **PASS** — HTTP 503 `local LLM unavailable` on an unreachable Ollama (fixed in `2abe3df`) |
 | 16 | Security | Authentication | **PASS** |
 | 17 | Security | Authorization | **PASS** |
 | 18 | Security | File validation | **PASS** |
@@ -82,7 +82,7 @@ row 15, which still fails.
 | Upload dokumen | live curl: upload a document, ask a question about it | **PASS** — `POST /upload -> HTTP 200 {"filename":"bf9676ef...-policy.txt","status":"processed","kind":"document"}` for the `policy.txt` fixture; the follow-up `"Menurut dokumen kebijakan, berapa hari cuti tahunan karyawan tetap?"` returned `tool_used=rag_search` with four `sources` entries and the answer `"...12 hari kerja per tahun."`. The previous revision recorded a 2-of-3 flake here; it did not reproduce (5 consecutive live sends of the policy question all returned `rag_search` with clean prose). Note: the fixture set still has no PDF (`.txt` and `.png` only), so the *PDF* path was not exercised |
 | Response AI tampil | served renderer module + a direct render | **PASS** — `GET :5175/src/components/MessageBubble.vue -> HTTP 200 bytes=7617` contains `markdown-it`, `DOMPurify` and `linkify`. Rendering executed directly with the app's own configuration (`new MarkdownIt({ linkify: true, breaks: true })` over `**Kebijakan cuti**\n\n- 12 hari kerja\n- lihat [panduan](https://example.com)`) produced `<p><strong>Kebijakan cuti</strong></p><ul><li>12 hari kerja</li><li>lihat <a href="https://example.com">panduan</a></li></ul>`. Scope limit: no browser was opened, so a pixel-level render of a live reply was not observed |
 | Loading state | served module | **PASS** — `GET :5175/src/components/ChatBox.vue -> HTTP 200 bytes=12150` contains `Sedang berpikir` inside `<span class="inline-block animate-pulse">`; `useChat` sets `isLoading` around every request. Scope limit: the spinner's appearance during a live wait was not observed in a browser |
-| Error handling | point the backend at a socket that refuses, send a message, expect 503 | **FAIL** — a refused connection yields **HTTP 500 `Internal Server Error`**, not the 503 `local LLM unavailable` the plan specifies. See Step 2 below |
+| Error handling | point the backend at a socket that refuses, send a message, expect 503 | **PASS** — `HTTP_STATUS=503`, body `{"detail":"local LLM unavailable: cannot reach Ollama at http://127.0.0.1:9: [Errno 61] Connection refused"}` (fixed in `2abe3df`). See Step 2 below |
 
 ## Security
 
@@ -112,28 +112,32 @@ Observed, with a valid token:
 
 | Backend points at | `POST /chat` | Body |
 |---|---|---|
-| `http://127.0.0.1:9` (nothing listening) | **HTTP 500** | `Internal Server Error` |
+| `http://127.0.0.1:9` (nothing listening) | **HTTP 503** | `{"detail":"local LLM unavailable: cannot reach Ollama at http://127.0.0.1:9: [Errno 61] Connection refused"}` |
 | `http://127.0.0.1:8012` (reachable, answers 502) | **HTTP 503** | `{"detail":"local LLM unavailable: ollama /api/chat returned 502: {\"error\":\"simulated ollama failure\"}"}` |
 
-Server log for the dead-port case ends with:
+Re-run after the fix, verbatim:
 
 ```text
-  File ".../backend/agent/orchestrator.py", line 121, in run_agent
-    reply = _chat(messages)
-  File ".../backend/agent/orchestrator.py", line 82, in _chat
-    response = httpx.post(
-  ...
-httpx.ConnectError: [Errno 61] Connection refused
+$ curl -s -o /tmp/chat503.json -w "HTTP_STATUS=%{http_code}\n" -X POST localhost:8009/chat \
+    -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d '{"session_id":"probe503","message":"halo"}'
+HTTP_STATUS=503
+body: {"detail":"local LLM unavailable: cannot reach Ollama at http://127.0.0.1:9: [Errno 61] Connection refused"}
 ```
 
-So the 503 handler is correct but incomplete: `_chat` converts a non-200 **response** into
-`AgentError` (which `routers/chat.py:51-52` turns into 503), but a connection failure raises
-`httpx.ConnectError`, which nothing catches, so FastAPI returns 500. That is exactly the case this
-step was written to exercise — "stop Ollama" produces an unreachable socket, not a 502 — so the
-frontend's red bar receives an `Internal Server Error` rather than `local LLM unavailable`. The
-red bar itself is wired (`ChatBox.vue` contains `bg-red-50`; `useChat` sets `error` from any thrown
-api error), so the defect is the status code and the message, not the UI branch. The environment was
-not modified: `.env` was left untouched and `OLLAMA_BASE_URL` was overridden per process only.
+The original defect: `_chat` converted a non-200 **response** into `AgentError` (which
+`routers/chat.py:51-52` turns into 503), but a connection failure raised `httpx.ConnectError`,
+which nothing caught, so FastAPI answered 500 `Internal Server Error`. That was exactly the case
+this step exists to exercise — "stop Ollama" produces an unreachable socket, not a 502 — so the
+frontend's red bar received an `Internal Server Error` rather than `local LLM unavailable`.
+
+Fixed in `2abe3df`: `_chat` now wraps `httpx.post` and re-raises `httpx.HTTPError` as `AgentError`.
+The same class of failure on the embedding path (`services/embedding_service.py`) is re-raised as
+`EmbeddingError`, and the document/upload routers map it to 503 as well, so an unreachable Ollama is
+consistently a 503 wherever it is hit. Regression tests were added at
+`backend/tests/test_chat_endpoint.py::test_chat_returns_503_when_ollama_is_unreachable` and
+`::test_document_ingest_returns_503_when_embedding_model_is_unreachable`. The environment was not
+modified: `.env` was left untouched and `OLLAMA_BASE_URL` was overridden per process only.
 
 ## Step 3: no secret ever entered the repo
 
@@ -174,24 +178,23 @@ dist/assets/index-CvZRmka1.js   247.55 kB │ gzip: 98.06 kB
 ✓ built in 692ms
 ```
 
-`pytest tests/ --collect-only -q` reports **91 tests collected**, so 91 collected == 91 passed,
+`pytest tests/ --collect-only -q` reports **93 tests collected**, so 93 collected == 93 passed,
 zero skipped. The single warning is a `starlette/anyio` `DeprecationWarning`, not a failure.
 
-**PASS, with one caveat that is explained rather than hidden.** A fifth full-suite run taken during
-this refresh printed `2 failed, 89 passed, 1 warning in 36.57s`. That run was **contaminated**:
-a second pytest process was running against the same `agentic_rag_test` database at the same time.
-The failure was reproduced deliberately and traced to a test-isolation defect, not to the
-application — see failure note 2. When the suite is the only pytest process touching that database,
-it is 91 passed, four times out of four.
+**Clean.** A fifth full-suite run taken during the earlier refresh printed `2 failed, 89 passed`.
+That run was contaminated by a second pytest process sharing the `agentic_rag_test` database; the
+test-isolation defect behind it is now fixed (failure note 2), so that signature can no longer be
+produced. Every subsequent full-suite run has been clean.
 
 ## Failure notes
 
-1. **Frontend / Error handling — an unreachable Ollama returns 500, not 503.** `httpx.ConnectError`
-   is raised out of `_chat` and caught by nothing, so FastAPI's default handler answers 500
-   `Internal Server Error`. The plan's Step 2 ("stop Ollama → expect the red error bar with 503") is
-   therefore not met. This is the only failing row in the table. It is unchanged from the previous
-   revision of this document: none of the commits after `d8f8447` touched this path.
-2. **A test-isolation defect that only bites when two pytest processes share the test database.**
+1. **RESOLVED in `2abe3df` — an unreachable Ollama returned 500, not 503.** `httpx.ConnectError` was
+   raised out of `_chat` and caught by nothing, so FastAPI's default handler answered 500
+   `Internal Server Error`, and the plan's Step 2 ("stop Ollama → expect the red error bar with 503")
+   was not met. `_chat` now re-raises `httpx.HTTPError` as `AgentError`; the embedding path does the
+   same with `EmbeddingError` and both routers map it to 503. Verified live: `HTTP_STATUS=503` with
+   `local LLM unavailable: cannot reach Ollama at http://127.0.0.1:9`. Row 15 now PASSes.
+2. **RESOLVED in `2abe3df` — a test-isolation defect that only bit when two pytest processes shared the test database.**
    `backend/tests/test_auth.py:14-20` has an `autouse` fixture that runs after *every* test in that
    module and deletes **every** row matching `users.username LIKE 'user-%'`. The e2e matrix's
    module-scoped `auth` fixture (`tests/test_e2e_matrix.py:83`) names its user `user-<hex8>` — the
@@ -209,8 +212,13 @@ it is 91 passed, four times out of four.
    - Sequential execution is safe because pytest collects `test_auth.py` before
      `test_e2e_matrix.py`, so the deletion happens before the matrix creates its user. The suite is
      simply not safe to run as two concurrent processes, nor under `pytest-xdist`.
-   - Not fixed here: the assignment scoped this change to `docs/DONE.md`. It is recorded so the
-     next person does not mistake a concurrent run's output for a product regression.
+   - **Fixed in `2abe3df`.** `tests/test_auth.py` now namespaces its fixture to `auth-user-<hex8>` and
+     its `autouse` cleanup matches `auth-user-%`, so it can no longer delete the e2e matrix's
+     `user-<hex8>` accounts. A separate latent flake in
+     `tests/test_document_service.py::test_ingest_file_stores_one_row_per_chunk` — which asserted
+     `rows[0].doc_metadata["chunk_index"] == 0` on an unordered query while `synchronize_seqscans`
+     rotated the seq-scan start block on a bloated `documents` table — was fixed in the same commit
+     by adding `.order_by(Document.id)`.
 3. **Previously reported failure: "a malformed tool call can be returned verbatim as the answer."**
    Now fixed and re-verified. `agent/orchestrator.py` salvages a JSON tool-call blob emitted as
    content (`_salvage_tool_call`), and if it cannot, re-prompts (`_looks_like_tool_call` →
@@ -236,9 +244,10 @@ it is 91 passed, four times out of four.
   that block as data. Nothing strips or neutralises instructions inside a document. With a 3B model
   this is a soft mitigation; `sec_003` passing 16 of 16 clean runs shows it works on the one
   planted instruction the suite tests, not that it resists injection generally.
-- **A connection failure to Ollama is a 500, not a 503** (failure note 1). The 503 path exists and
-  works, but only for a reachable Ollama that answers non-200.
-- **The suite cannot be run concurrently against one database** (failure note 2).
+- **An unreachable Ollama used to be a 500 rather than a 503** — fixed in `2abe3df`, and now covered
+  by two regression tests so it cannot silently return.
+- **The suite was unsafe to run as concurrent pytest processes against one database** — fixed in
+  `2abe3df` by namespacing `test_auth.py`'s fixture (failure note 2).
 - **The SQL tool's regex guard is a fast rejection, not the security boundary.** The real boundary
   is the `rag_readonly` role's grants. The regex has already needed two rounds of tightening
   (data-modifying CTEs in `463ff0e`).
@@ -258,14 +267,15 @@ it is 91 passed, four times out of four.
 
 ## Conclusion
 
-The plan's Step 4 expectation, "everything green," is **met under normal (single-process)
-execution**: the backend is **91 passed**, the frontend suite is 5 passed, and the production build
-succeeds. Of the 21 checklist rows, **19 are clean PASS**, **2 are PASS under the stated scope limit**
-("Response AI tampil" and "Loading state" were not observed in a browser), and **1 is outright FAIL**:
+The plan's Step 4 expectation, "everything green," is **met**. The backend suite is **93 passed**
+(twice consecutively), the frontend suite is 5 passed, and the production build succeeds. Of the 21
+checklist rows, **19 are clean PASS** and **2 are PASS under the stated scope limit** ("Response AI
+tampil" and "Loading state" were verified through the served modules and a direct markdown render,
+not by opening a browser). **No row is FAIL.** Row 15 was the last failure and is fixed in `2abe3df`.
 
-- **Frontend / Error handling** — a stopped or unreachable Ollama yields HTTP 500
-  `Internal Server Error` rather than the specified 503 `local LLM unavailable`, because
-  `httpx.ConnectError` is uncaught.
+Two defects that earlier revisions of this document recorded as unresolved are now closed:
+the 500-instead-of-503 on an unreachable Ollama, and a test-isolation defect that only appeared when
+two pytest processes shared the test database. Both are described in the failure notes above.
 
 No row is UNVERIFIED. Nothing in this document was ticked from the plan's wording or from the
 previous revision of this file; every quoted string above is copied from a command that was run
