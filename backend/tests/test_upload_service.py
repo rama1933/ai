@@ -26,6 +26,28 @@ def test_classify_accepts_plain_text_document():
     assert upload_service.classify("policy.txt", "text/plain", b"kebijakan cuti") == "document"
 
 
+def test_classify_rejects_pdf_bytes_in_txt():
+    with pytest.raises(upload_service.UploadRejected, match="signature"):
+        upload_service.classify("h.txt", "text/plain", b"%PDF-1.7\n" + b"0" * 64)
+
+
+def test_classify_rejects_elf_bytes_in_txt():
+    with pytest.raises(upload_service.UploadRejected, match="signature"):
+        upload_service.classify("i.txt", "text/plain", b"\x7fELF\x02\x01\x01\x00" + b"0" * 64)
+
+
+def test_classify_rejects_mz_bytes_in_md():
+    with pytest.raises(upload_service.UploadRejected, match="signature"):
+        upload_service.classify("j.md", "application/octet-stream", b"MZ\x90\x00" + b"0" * 64)
+
+
+def test_classify_accepts_utf8_text_with_multibyte_chars():
+    assert (
+        upload_service.classify("k.txt", "text/plain", "kebijakan cuti tahunan — 23 hari".encode("utf-8"))
+        == "document"
+    )
+
+
 def test_classify_rejects_disallowed_extension():
     with pytest.raises(upload_service.UploadRejected, match="extension"):
         upload_service.classify("payload.exe", "application/octet-stream", b"MZ\x90\x00")
