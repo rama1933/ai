@@ -10,7 +10,7 @@ Verdicts: **PASS** (the command ran and the requirement holds) · **FAIL** (the 
 the requirement does not hold) · **UNVERIFIED** (no command could prove it on this machine).
 Where a row holds only under a stated scope limit, the limit is written into the row.
 
-## Verdict summary — all 21 rows
+## Verdict summary — all 23 rows
 
 | # | Section | Requirement | Verdict |
 |---|---|---|---|
@@ -35,6 +35,8 @@ Where a row holds only under a stated scope limit, the limit is written into the
 | 19 | Security | SQL restriction | **PASS** |
 | 20 | Security | Prompt injection mitigation | **PASS** |
 | 21 | Security | `.env` tidak masuk Git | **PASS** |
+| 22 | Security | Conversation reads are owner-scoped (`GET /chat/history`, `POST /chat`) | **PASS** — `12 passed, 1 warning in 7.66s` (see the SP0 section below) |
+| 23 | Security | The SQL tool cannot reach `chat_history` | **PASS** — `2 passed, 10 deselected, 1 warning in 0.47s` (see the SP0 section below). Scope limit: `-k sql_tool` selects only the two query-text tests; the role's grant — the actual boundary — is asserted separately, `1 passed, 11 deselected, 1 warning in 0.22s` |
 
 No row is UNVERIFIED.
 
@@ -267,9 +269,10 @@ produced. Every subsequent full-suite run has been clean.
 
 ## Conclusion
 
-The plan's Step 4 expectation, "everything green," is **met**. The backend suite is **93 passed**
-(twice consecutively), the frontend suite is 5 passed, and the production build succeeds. Of the 21
-checklist rows, **19 are clean PASS** and **2 are PASS under the stated scope limit** ("Response AI
+The plan's Step 4 expectation, "everything green," is **met**. The backend suite is **108 passed**
+(a net **+15** over the 93 recorded above; every one of those additions came from the SP0 work — see
+the SP0 section below), the frontend suite is 5 passed, and the production build succeeds. Of the 23
+checklist rows, **21 are clean PASS** and **2 are PASS under the stated scope limit** ("Response AI
 tampil" and "Loading state" were verified through the served modules and a direct markdown render,
 not by opening a browser). **No row is FAIL.** Row 15 was the last failure and is fixed in `2abe3df`.
 
@@ -280,3 +283,105 @@ two pytest processes shared the test database. Both are described in the failure
 No row is UNVERIFIED. Nothing in this document was ticked from the plan's wording or from the
 previous revision of this file; every quoted string above is copied from a command that was run
 during this refresh.
+
+## SP0 — ownership foundation
+
+Run date: 2026-09-21. This section carries rows 22 and 23 above. Both services the suite needs were
+live: PostgreSQL, and Ollama with `llama3.2:3b` and `nomic-embed-text` pulled.
+
+### Command 1 — the isolation check
+
+```text
+$ cd backend && ../.venv/bin/pytest tests/test_ownership.py -v
+collected 12 items
+
+tests/test_ownership.py::test_migration_001_is_idempotent PASSED         [  8%]
+tests/test_ownership.py::test_chat_creates_session_owned_by_caller PASSED [ 16%]
+tests/test_ownership.py::test_chat_rejects_foreign_session_id PASSED     [ 25%]
+tests/test_ownership.py::test_history_is_isolated_between_users PASSED   [ 33%]
+tests/test_ownership.py::test_history_requires_existing_session PASSED   [ 41%]
+tests/test_ownership.py::test_chat_second_message_reuses_the_same_session PASSED [ 50%]
+tests/test_ownership.py::test_auth_me_returns_username_and_role PASSED   [ 58%]
+tests/test_ownership.py::test_auth_me_rejects_missing_token PASSED       [ 66%]
+tests/test_ownership.py::test_sql_tool_cannot_reach_chat_history PASSED  [ 75%]
+tests/test_ownership.py::test_sql_tool_still_reaches_documents PASSED    [ 83%]
+tests/test_ownership.py::test_rag_readonly_cannot_read_chat_history PASSED [ 91%]
+tests/test_ownership.py::test_upload_records_uploader PASSED             [100%]
+
+======================== 12 passed, 1 warning in 7.66s =========================
+```
+
+**Row 22 PASS.** The owner-scoping claims are behavioural, not textual: `test_history_is_isolated_between_users`
+sends user B's token at user A's session and asserts `404` plus `"rahasia A" not in response.text`, and
+`test_chat_rejects_foreign_session_id` asserts B's message was never written by reading the rows back.
+`test_history_requires_existing_session` shows an unknown id is also `404`, so absent and not-yours stay
+indistinguishable.
+
+### Command 2 — the full backend suite
+
+```text
+$ cd backend && ../.venv/bin/pytest -q
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed, 1 warning in 65.59s (0:01:05)
+
+$ cd backend && ../.venv/bin/pytest -q --collect-only
+108 tests collected in 0.30s
+```
+
+**Clean.** 108 collected == 108 passed, zero skipped, zero failed. The single warning is the
+`starlette/anyio` `DeprecationWarning` recorded in the refresh above, not a failure.
+
+The suite was clean on its **first** run, so the known pre-existing behavioural flake
+`tests/test_e2e_matrix.py::test_sec_003_prompt_injection_in_a_document_is_ignored` did not fail here
+and no re-run of it was needed. That is one observation, not a new reliability claim: it says nothing
+about the flake beyond this run, and the row-20 entry above remains the record of its behaviour.
+
+### Command 3 — the SQL tool cannot reach `chat_history`
+
+```text
+$ cd backend && ../.venv/bin/pytest tests/test_ownership.py -k sql_tool -v
+collected 12 items / 10 deselected / 2 selected
+
+tests/test_ownership.py::test_sql_tool_cannot_reach_chat_history PASSED  [ 50%]
+tests/test_ownership.py::test_sql_tool_still_reaches_documents PASSED    [100%]
+
+================= 2 passed, 10 deselected, 1 warning in 0.47s ==================
+```
+
+**Row 23 PASS, under a stated scope limit.** `-k sql_tool` matches the two tests that exercise the
+query-text check in `tools/sql_tool.py` — `chat_history` is rejected with `SqlRejected`, `documents`
+still returns rows — but it does **not** match the test that proves the role's privilege is gone. That
+check is the boundary, so it was run as well:
+
+```text
+$ cd backend && ../.venv/bin/pytest tests/test_ownership.py -k rag_readonly -v
+collected 12 items / 11 deselected / 1 selected
+
+tests/test_ownership.py::test_rag_readonly_cannot_read_chat_history PASSED [100%]
+
+================= 1 passed, 11 deselected, 1 warning in 0.22s ==================
+```
+
+And the privilege itself, read directly from the live database (read-only):
+
+```text
+$ /opt/homebrew/opt/postgresql@17/bin/psql -d agentic_rag -tAc "SELECT
+    'chat_history=' || has_table_privilege('rag_readonly','chat_history','SELECT'),
+    'documents='    || has_table_privilege('rag_readonly','documents','SELECT'),
+    'users='        || has_table_privilege('rag_readonly','users','SELECT')"
+chat_history=false|documents=true|users=false
+```
+
+So the two layers agree: the text check refuses the query, and `rag_readonly` holds `SELECT` on
+`documents` only. Note that the query text check alone was the weak layer —
+`db/migrations/002_sql_tool_readonly_scope.sql` records that `FROM "chat_history"` matched nothing in
+the regex until SP0 fix round 1, which is why the grant was revoked as well.
+
+### Documentation correction made with these rows
+
+`README.md:100` still read "holds `SELECT` on `chat_history` and `documents` only — never on `users`",
+which stopped being true when the grant was revoked (`1503a56`). It now reads
+`SELECT` on `documents` only, with `chat_history` named as deliberately removed so the agent cannot
+read conversations. No other line of that section changed.
+

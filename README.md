@@ -97,7 +97,7 @@ cd frontend && npm run test
 
 ## Security notes
 
-- The SQL tool runs as `rag_readonly`, which holds `SELECT` on `chat_history` and `documents` only — never on `users`.
+- The SQL tool runs as `rag_readonly`, which holds `SELECT` on `documents` only — never on `users`, and no longer on `chat_history`, which was deliberately removed so the agent cannot read conversations.
 - Uploads are checked by extension, MIME type, size, and magic bytes; the signature wins.
 - Retrieved documents and OCR output are wrapped in `UNTRUSTED_DATA` markers and the system prompt forbids following instructions found inside them.
 - The model never chooses which image to OCR; the path comes from the authenticated request.
