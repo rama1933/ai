@@ -12,15 +12,35 @@ export interface ChatResponse {
 }
 
 export interface HistoryItem {
+  id: number
   role: string
   message: string
   created_at: string
+}
+
+export interface AttachmentRef {
+  stored_name: string
+  display_name: string
+  kind: 'image' | 'document'
+  mime: string
+  size: number
+}
+
+export interface SessionSummary {
+  id: string
+  title: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface UploadResponse {
   filename: string
   status: string
   kind: 'image' | 'document'
+  stored_name: string
+  display_name: string
+  mime: string
+  size: number
 }
 
 export const TOKEN_KEY = 'agentic-rag-token'
@@ -133,5 +153,24 @@ export const api = {
   async fetchHistory(sessionId: string): Promise<HistoryItem[]> {
     const { data } = await http.get('/chat/history', { params: { session_id: sessionId } })
     return data
+  },
+
+  async listSessions(): Promise<SessionSummary[]> {
+    const { data } = await http.get('/sessions')
+    return data
+  },
+
+  async createSession(): Promise<SessionSummary> {
+    const { data } = await http.post('/sessions')
+    return data
+  },
+
+  async renameSession(sessionId: string, title: string): Promise<SessionSummary> {
+    const { data } = await http.patch(`/sessions/${sessionId}`, { title })
+    return data
+  },
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await http.delete(`/sessions/${sessionId}`)
   },
 }

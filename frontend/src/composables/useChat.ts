@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 
 import { api, describeError, isNotFound, type SourceRef } from '../services/api'
+import { useSessions } from './useSessions'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -9,28 +10,29 @@ export interface ChatMessage {
   sources?: SourceRef[]
 }
 
-const SESSION_KEY = 'agentic-rag-session'
-
-function resolveSessionId(): string {
-  let id = localStorage.getItem(SESSION_KEY)
-  if (!id) {
-    id = `session-${crypto.randomUUID()}`
-    localStorage.setItem(SESSION_KEY, id)
-  }
-  return id
-}
-
 export function useChat() {
-  const sessionId = resolveSessionId()
+  // One active conversation across the app; the sidebar owns switching.
+  const { activeId } = useSessions()
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
   const pendingImage = ref<string | null>(null)
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
+  /** The id the next message goes to, minting one when nothing is active yet. */
+  function resolveSessionId(): string {
+    if (activeId.value) return activeId.value
+    // A brand-new account has no server-side session to select. Mint as the
+    // pre-sidebar build did; POST /chat adopts the id through get_or_create_session.
+    const minted = `session-${crypto.randomUUID()}`
+    activeId.value = minted
+    return minted
+  }
+
   async function loadHistory(): Promise<void> {
+    if (!activeId.value) return
     try {
-      const history = await api.fetchHistory(sessionId)
+      const history = await api.fetchHistory(activeId.value)
       messages.value = history.map((item) => ({
         role: item.role === 'user' ? 'user' : 'assistant',
         content: item.message,
@@ -43,6 +45,15 @@ export function useChat() {
       if (isNotFound(err)) return
       error.value = describeError(err)
     }
+  }
+
+  /** Sidebar navigation: clear this conversation's state, load the target's. */
+  async function switchTo(): Promise<void> {
+    messages.value = []
+    input.value = ''
+    pendingImage.value = null
+    error.value = null
+    await loadHistory()
   }
 
   async function attach(file: File): Promise<void> {
@@ -65,6 +76,23 @@ export function useChat() {
     }
   }
 
+  /** One attempt. Returns the failure, or null when the reply landed. */
+  async function deliver(sessionId: string, text: string): Promise<unknown> {
+    try {
+      const response = await api.sendMessage(sessionId, text, pendingImage.value ?? undefined)
+      messages.value.push({
+        role: 'assistant',
+        content: response.answer,
+        toolUsed: response.tool_used,
+        sources: response.sources,
+      })
+      pendingImage.value = null
+      return null
+    } catch (err) {
+      return err
+    }
+  }
+
   async function send(): Promise<void> {
     const text = input.value.trim()
     if (!text || isLoading.value) return
@@ -75,20 +103,19 @@ export function useChat() {
     isLoading.value = true
 
     try {
-      const response = await api.sendMessage(sessionId, text, pendingImage.value ?? undefined)
-      messages.value.push({
-        role: 'assistant',
-        content: response.answer,
-        toolUsed: response.tool_used,
-        sources: response.sources,
-      })
-      pendingImage.value = null
-    } catch (err) {
-      error.value = describeError(err)
+      let failure = await deliver(resolveSessionId(), text)
+      if (failure && isNotFound(failure)) {
+        // The stored id is unknown or belongs to another account -- stale
+        // localStorage after a logout on a shared browser. A fresh conversation
+        // fixes it; retrying is cheaper than a dead-end "unknown session".
+        activeId.value = null
+        failure = await deliver(resolveSessionId(), text)
+      }
+      if (failure) error.value = describeError(failure)
     } finally {
       isLoading.value = false
     }
   }
 
-  return { sessionId, messages, input, pendingImage, isLoading, error, send, attach, loadHistory }
+  return { sessionId: activeId, messages, input, pendingImage, isLoading, error, send, attach, loadHistory, switchTo }
 }

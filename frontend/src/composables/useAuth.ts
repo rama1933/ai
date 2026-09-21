@@ -2,6 +2,7 @@ import axios from 'axios'
 import { computed, ref } from 'vue'
 
 import { api, ROLE_KEY, TOKEN_KEY, USERNAME_KEY } from '../services/api'
+import { useSessions } from './useSessions'
 
 const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
 const role = ref<string | null>(localStorage.getItem(ROLE_KEY))
@@ -31,6 +32,9 @@ export function useAuth() {
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(ROLE_KEY)
     localStorage.removeItem(USERNAME_KEY)
+    // The active conversation belongs to the account, not the browser: a stale
+    // id here would 404 the next account's first message with "unknown session".
+    useSessions().forget()
   }
 
   async function fetchMe(): Promise<void> {

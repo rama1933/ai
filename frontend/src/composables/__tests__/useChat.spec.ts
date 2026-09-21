@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '../../services/api'
 import { useChat } from '../useChat'
+import { useSessions } from '../useSessions'
 
 describe('useChat', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     localStorage.clear()
+    // The session id now lives in the useSessions singleton; reset it so each
+    // test mints its own.
+    useSessions().activeId.value = null
   })
 
   it('appends the user message and the assistant reply', async () => {
@@ -50,7 +54,15 @@ describe('useChat', () => {
   })
 
   it('attaches an uploaded image and clears it after sending', async () => {
-    vi.spyOn(api, 'uploadFile').mockResolvedValue({ filename: 'abc-struk.png', status: 'stored', kind: 'image' })
+    vi.spyOn(api, 'uploadFile').mockResolvedValue({
+      filename: 'abc-struk.png',
+      status: 'stored',
+      kind: 'image',
+      stored_name: 'abc-struk.png',
+      display_name: 'struk.png',
+      mime: 'image/png',
+      size: 1,
+    })
     const sendSpy = vi.spyOn(api, 'sendMessage').mockResolvedValue({ answer: 'ok', tool_used: 'image_ocr', sources: [] })
 
     const chat = useChat()
@@ -77,9 +89,11 @@ describe('useChat', () => {
   })
 
   it('treats a 404 from the history endpoint as an empty conversation', async () => {
-    // A session id is minted client-side, so a brand-new conversation has no row
+    // A session id is generated client-side, so a brand-new conversation has no row
     // until the first POST /chat and GET /chat/history answers 404. That is the
     // contract, not a failure: the empty state must not show an error banner.
+    const chat = useChat()
+    chat.sessionId.value = 'session-under-test'
     vi.spyOn(api, 'fetchHistory').mockRejectedValue(
       Object.assign(new Error('unknown session'), {
         isAxiosError: true,
@@ -87,7 +101,6 @@ describe('useChat', () => {
       }),
     )
 
-    const chat = useChat()
     await chat.loadHistory()
 
     expect(chat.messages.value).toHaveLength(0)
@@ -95,6 +108,8 @@ describe('useChat', () => {
   })
 
   it('still surfaces a non-404 history failure', async () => {
+    const chat = useChat()
+    chat.sessionId.value = 'session-under-test'
     vi.spyOn(api, 'fetchHistory').mockRejectedValue(
       Object.assign(new Error('Service Unavailable'), {
         isAxiosError: true,
@@ -102,7 +117,6 @@ describe('useChat', () => {
       }),
     )
 
-    const chat = useChat()
     await chat.loadHistory()
 
     expect(chat.error.value).toContain('local LLM unavailable')
