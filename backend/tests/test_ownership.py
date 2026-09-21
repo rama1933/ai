@@ -49,8 +49,18 @@ def test_migration_001_is_idempotent():
     second = _psql("-f", MIGRATION)
     assert second.returncode == 0, second.stderr
 
-    count = _psql("-tAc", "SELECT count(*) FROM sessions")
-    assert count.returncode == 0, count.stderr
+    # The two returncode assertions above cannot catch the defect this test exists for:
+    # the original name-keyed FK guard added a SECOND, differently-named foreign key on
+    # the same column and still exited 0. Only counting the FKs detects that.
+    fk_count = _psql(
+        "-tAc",
+        "SELECT count(*) FROM pg_constraint c "
+        "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) "
+        "WHERE c.conrelid = 'chat_history'::regclass AND c.contype = 'f' "
+        "AND a.attname = 'session_id'",
+    )
+    assert fk_count.returncode == 0, fk_count.stderr
+    assert fk_count.stdout.strip() == "1", fk_count.stdout
 
 
 @pytest.fixture
