@@ -555,3 +555,110 @@ which stopped being true when the grant was revoked (`1503a56`). It now reads
 `SELECT` on `documents` only, with `chat_history` named as deliberately removed so the agent cannot
 read conversations. No other line of that section changed.
 
+
+---
+
+# SP1 — Standard chat WebUI baseline (2026-09-22)
+
+Every verdict below was pasted from a command run during the SP1 sweep on branch `sp1-chat-ux`
+(from commit `6abfb90`). Nothing is ticked from the plan text. The Task 10 gate's three
+artefacts — a literal §20 `POST /chat` body, a `POST /upload` response, and a `<lg` screenshot —
+lead the section; the SP1 plan's ten tasks follow with the suite output that closed each one.
+
+## Task 10 gate — spec §20 conformance, pasted live
+
+`POST /chat` with §20's *literal* request body — no `attachments` key — run against the live
+server with a freshly registered user:
+
+```
+$ curl -s -X POST localhost:8000/chat -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"session_id": "session-001", "message": "Halo, perkenalkan dirimu dalam satu kalimat."}'
+{
+    "answer": "Saya adalah asisten yang ramah dan siap membantu Anda dengan segala pertanyaan dan kebutuhan Anda.",
+    "tool_used": null,
+    "sources": []
+}
+```
+
+`answer`, `tool_used` and `sources[].filename`'s container are all present; the documented shape
+is untouched. `POST /upload` still carries `filename` and `status`, plus the additive fields:
+
+```
+$ curl -s -X POST localhost:8000/upload -H "Authorization: Bearer $TOKEN" \
+    -F "file=@/tmp/sp1-fixtures/gambar-satu.png;type=image/png"
+{
+    "filename": "7c3cdae2156e45de8a8a69cd80f95e61-gambar-satu.png",
+    "status": "stored",
+    "kind": "image",
+    "stored_name": "7c3cdae2156e45de8a8a69cd80f95e61-gambar-satu.png",
+    "display_name": "gambar-satu.png",
+    "mime": "image/png",
+    "size": 4159
+}
+```
+
+`<lg` screenshots with the sidebar closed and §15's single chat column intact:
+`sp1-375-light.png` and `sp1-375-dark.png` (375×667), with `sp1-1440-light.png` /
+`sp1-1440-dark.png` (1440×900) showing the permanent rail beside the unchanged column.
+
+## Full suites
+
+```
+$ cd backend && ../.venv/bin/pytest tests/ -v
+136 passed, 1 warning in 101.63s          # includes the 10 live-model integration tests
+
+$ cd frontend && npm run test
+Test Files  6 passed (6)
+      Tests  36 passed (36)
+
+$ cd frontend && npm run build
+dist/assets/index-DPO38brX.css   28.99 kB │ gzip:   6.10 kB
+dist/assets/index-gdi8RLIc.js   472.82 kB │ gzip: 172.23 kB
+```
+
+## SP1 rows, one per feature
+
+| Feature | Verified by | Result |
+|---|---|---|
+| Task 1 — `stream_agent` generator, JSON-leak guard | `../.venv/bin/pytest tests/test_orchestrator.py -v` | **PASS** — `15 passed` (10 original cases unmodified in body; 5 new streaming cases incl. blob-never-leaks and legit-`{`-answer flush) |
+| Task 2 — `POST /chat/stream` SSE | `../.venv/bin/pytest tests/test_chat_stream.py tests/test_chat_endpoint.py tests/test_ownership.py -v` | **PASS** — `25 passed` (deltas→one done, tool/sources order, `error` on AgentError, assistant row persisted after close, session-scoped truncation, foreign session 404) |
+| Task 3 — sessions CRUD + auto-title | `../.venv/bin/pytest tests/test_sessions.py tests/test_ownership.py -v` | **PASS** — `19 passed` (list newest-first, server-generated id, rename, cascade delete, foreign PATCH/DELETE/history 404, 60-char word-boundary title) |
+| Task 4 — attachments persisted + owner-scoped serving | `../.venv/bin/pytest tests/test_attachments.py tests/test_upload_endpoint.py tests/test_ocr_tool.py tests/test_registry.py -v` | **PASS** — `24 passed` (history round-trip, dual OCR under `[display]` headers, foreign 404, traversal 404, unsent-not-servable, >5 rejected 422) |
+| Task 5 — session sidebar | `npm run test && npx vue-tsc -b`, then manual | **PASS** — `17 passed` at the time (useSessions 5 new: create/rename/remove/legacy-id/unknown-active); manual create→rename→switch→delete exercised in the browser with history correct after each step |
+| Task 6 — streaming transport + stop | `npm run test`, then manual | **PASS** — deltas accumulate on one bubble; frame split across two chunks parses once (carry-buffer test); `stop()` keeps partial text; `error` event lands in the banner; live UI streamed against real Ollama with the stop button active mid-stream |
+| Task 7 — attachment UI | `npm run test`, then manual | **PASS** — `27 passed` (three files→three chips; rejected file marks only its own; remove/clear; objectUrl cache + revokeAll). Manual: two images + a PDF attached, sent, OCR'd, **page reloaded — chips and thumbnails still on the message** |
+| Task 8 — copy / regenerate / edit | `npm run test`, then manual | **PASS** — `31 passed` (regenerate sends the user row id and replaces one answer; edit truncates from the previous row preserving attachments; both no-ops mid-stream). Manual: middle message edited, saved, **server history re-read matched the UI exactly** — old tail rows gone, edited turn + new answer present |
+| Task 9 — markdown + highlight.js | `npm run test && npm run build` | **PASS** — `36 passed` incl. `hljs-keyword` surviving sanitising and `<script>` dropped; build green. Bundle delta recorded in the commit: 149.18 → 172.23 kB gzipped |
+| Task 10 — this sweep | the rows above | **PASS** |
+
+Live SSE over the wire, against real Ollama (frame excerpt):
+
+```
+$ curl -s -N -X POST localhost:8000/chat/stream -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"session_id": "session-002", "message": "Jawab satu kata: siapa kamu?"}'
+data: {"type": "tool", "name": "sql_query"}
+
+data: {"type": "delta", "text": "The"}
+
+data: {"type": "delta", "text": " provided"}
+...
+```
+
+## Deviations and additions the plan's text did not spell out
+
+Recorded so no reviewer hunts for them:
+
+- The generator refactor changed the transport, so two test lines in the pre-existing orchestrator
+  suite were adapted: `payload["stream"]` is now pinned `True`, and the 503 regression test patches
+  `httpx.stream` instead of `httpx.post`. The behavioural assertions are untouched.
+- The Task 8 row ids required the streaming router to enrich the `done` event with
+  `user_row_id`/`assistant_row_id` (additive keys; `stream_agent`'s four-event contract is
+  unchanged). `GET /chat/history` gained `id` per `HistoryItem` in Task 2 as planned.
+- A stale `agentic-rag-session` localStorage entry pointing at another account's session used to
+  dead-end a send with "unknown session" (observed live). Logout now forgets the pointer, and a
+  send answered 404 retries once with a freshly minted id.
+- `registry.dispatch`'s `image_path` became `image_paths: list[str]` in Task 4 as planned; the
+  five test lambdas mirroring that signature were renamed with it.
+- The plan estimated ~40 KB gzipped for highlighting; the measured whole-task delta (highlight.js
+  core + six languages, toolbar, token styles) is +23.1 kB gzipped.

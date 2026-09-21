@@ -34,6 +34,10 @@ psql -d postgres -c "CREATE ROLE rag_readonly LOGIN PASSWORD 'rag_readonly_pw';"
 psql -d agentic_rag -f db/schema.sql
 psql -d agentic_rag_test -f db/schema.sql
 
+# On a database created before SP1 (attachments on messages), apply the additive
+# migration instead of re-running the schema:
+#   psql -d agentic_rag -f db/migrations/003_message_attachments.sql
+
 /opt/homebrew/bin/python3.10 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 cp backend/.env.example backend/.env   # then set JWT_SECRET
@@ -93,17 +97,24 @@ cd frontend && npm run test
 | POST | `/documents` | yes | ingest a document into the knowledge base |
 | POST | `/upload` | yes | store an image, or store+ingest a document |
 | POST | `/chat` | yes | ask the agent |
+| POST | `/chat/stream` | yes | ask the agent; server-sent events (`tool`/`sources`/`delta`/`done`/`error`) |
 | GET | `/chat/history` | yes | replay a session |
+| GET | `/sessions` | yes | list the caller's conversations, newest activity first |
+| POST | `/sessions` | yes | create an empty conversation (server-generated id) |
+| PATCH | `/sessions/{id}` | yes | rename a conversation |
+| DELETE | `/sessions/{id}` | yes | delete a conversation; its messages follow |
+| GET | `/attachments/{stored_name}` | yes | serve an attachment to the caller whose conversation references it |
 
 ## Security notes
 
-- The SQL tool runs as `rag_readonly`, which holds `SELECT` on `documents` only — never on `users`, and no longer on `chat_history`, which was deliberately removed so the agent cannot read conversations.
-- Uploads are checked by extension, MIME type, size, and magic bytes; the signature wins.
+- The SQL tool runs as `rag_readonly`, which holds `SELECT` on `documents` only — never on `users`, and no longer on `chat_history`, which was deliberately removed so the agent cannot read conversations. `sessions` and the `chat_history.attachments` column sit behind the same wall.
+- Uploads are checked by extension, MIME type, size, and magic bytes; the signature wins. A message references attachments by stored name only — the server re-derives kind and MIME from the file on disk.
 - Retrieved documents and OCR output are wrapped in `UNTRUSTED_DATA` markers and the system prompt forbids following instructions found inside them.
-- The model never chooses which image to OCR; the path comes from the authenticated request.
+- The model never chooses which image to OCR; the paths come from the authenticated request, and `image_ocr`'s schema still exposes zero parameters.
+- Stored attachments are served only to the caller whose conversation references them, and every failure is a 404 — a 403 would confirm existence.
 - `backend/.env` is git-ignored. Set a real `JWT_SECRET` before this leaves localhost.
 
 ## Not built
 
-Docker deployment, streaming responses, reranking, hybrid BM25, multi-agent supervisor.
+Docker deployment, reranking, hybrid BM25, multi-agent supervisor.
 See spec §25 for the roadmap beyond MVP.
