@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useEventListener, useMediaQuery, useScroll, useTextareaAutosize } from '@vueuse/core'
 
 import { useAuth } from '../composables/useAuth'
 import { useChat } from '../composables/useChat'
@@ -10,19 +11,48 @@ import SessionSidebar from './SessionSidebar.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import UploadButton from './UploadButton.vue'
 
-const { messages, input, pendingImage, isLoading, error, send, attach, loadHistory, switchTo } = useChat()
+const {
+  messages,
+  input,
+  pendingImage,
+  isLoading,
+  isStreaming,
+  error,
+  send,
+  stop,
+  attach,
+  loadHistory,
+  switchTo,
+} = useChat()
 const { refresh: refreshSessions } = useSessions()
 const { logout } = useAuth()
 
 const scrollRef = ref<HTMLElement | null>(null)
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const drawerOpen = ref(false)
+
+// Grow the composer with its content; the class max-h-40 caps and scrolls it.
+// The returned ref is the live textarea element, reused for focusing below.
+const { textarea: textareaRef } = useTextareaAutosize({ input })
 
 // An explicit `behavior` on scrollTo wins over the CSS `scroll-behavior`, so
 // the reduced-motion block in style.css cannot reach this call — ask here too.
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 
 const hasConversation = computed(() => messages.value.length > 0)
+
+// Follow the conversation while the reader is at the bottom, or while a stream
+// is arriving; otherwise leave them where they scrolled and offer the pill.
+const { arrivedState } = useScroll(scrollRef, { behavior: 'auto' })
+const showPill = computed(() => hasConversation.value && !arrivedState.bottom && !isStreaming.value)
+
+const lastContent = computed(() => messages.value[messages.value.length - 1]?.content)
+
+watch([lastContent, () => messages.value.length, isLoading], async ([content]) => {
+  if (content === undefined) return
+  if (!arrivedState.bottom && !isStreaming.value && !isLoading.value) return
+  await nextTick()
+  scrollToBottom()
+})
 
 const SUGGESTIONS = [
   'Berapa hari cuti tahunan karyawan tetap?',
@@ -36,38 +66,22 @@ async function onSidebarNavigate(): Promise<void> {
   await switchTo()
 }
 
+// Esc aborts the stream from wherever focus sits.
+useEventListener(window, 'keydown', (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && isStreaming.value) stop()
+})
+
 onMounted(async () => {
   await loadHistory()
   void refreshSessions()
   scrollToBottom()
 })
 
-/** Only follow the conversation if the reader is already at the bottom. */
-function isNearBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < 120
-}
-
 function scrollToBottom(): void {
   const el = scrollRef.value
-  if (el) el.scrollTop = el.scrollHeight
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion.value ? 'auto' : 'smooth' })
 }
-
-watch([() => messages.value.length, isLoading], async () => {
-  const el = scrollRef.value
-  if (!el) return
-  const stick = isNearBottom(el) || isLoading.value
-  await nextTick()
-  if (stick) el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion.matches ? 'auto' : 'smooth' })
-})
-
-// Grow the composer with its content, up to a ceiling, then scroll inside it.
-watch(input, async () => {
-  await nextTick()
-  const el = textareaRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-})
 
 function onKeydown(event: KeyboardEvent): void {
   // isComposing guards IME input, where Enter commits a candidate rather than sending.
@@ -78,7 +92,7 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 async function submit(): Promise<void> {
-  if (!input.value.trim() || isLoading.value) return
+  if (!input.value.trim() || isLoading.value || isStreaming.value) return
   await send()
   void refreshSessions() // a first, client-minted session only exists server-side now
   void nextTick(() => textareaRef.value?.focus())
@@ -89,7 +103,7 @@ function useSuggestion(text: string): void {
   void nextTick(() => textareaRef.value?.focus())
 }
 
-const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
+const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value && !isStreaming.value)
 </script>
 
 <template>
@@ -153,7 +167,7 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
         <div class="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6">
           <!-- Empty state doubles as the suggestion surface: a blank chat gives
                no hint of what this assistant can actually do. -->
-          <div v-if="!hasConversation && !isLoading" class="animate-fade-up pt-8 text-center sm:pt-16">
+          <div v-if="!hasConversation && !isLoading && !isStreaming" class="animate-fade-up pt-8 text-center sm:pt-16">
             <div
               class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
               aria-hidden="true"
@@ -208,6 +222,19 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
         </div>
       </main>
 
+      <!-- Appear when the reader scrolled away from the live conversation. -->
+      <div v-if="showPill" class="pointer-events-none relative">
+        <button
+          type="button"
+          class="pointer-events-auto absolute -top-14 left-1/2 grid h-9 w-9 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-border-strong bg-surface text-subtle shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:text-fg"
+          aria-label="Kembali ke pesan terbaru"
+          title="Ke pesan terbaru"
+          @click="scrollToBottom"
+        >
+          <AppIcon name="send" :size="16" class="rotate-180" />
+        </button>
+      </div>
+
       <footer class="border-t border-border bg-surface/80 backdrop-blur-md">
         <div class="mx-auto w-full max-w-3xl px-4 pb-4 pt-3 sm:px-6">
           <div
@@ -252,16 +279,17 @@ const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value
               @keydown="onKeydown"
             ></textarea>
 
-            <button
-              type="button"
-              class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
-              :disabled="!canSend"
-              aria-label="Kirim pesan"
-              title="Kirim pesan"
-              @click="submit"
-            >
-              <AppIcon name="send" :size="18" />
-            </button>
+          <button
+            type="button"
+            class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
+            :class="isStreaming ? 'bg-danger shadow-none' : ''"
+            :disabled="isStreaming ? false : !canSend"
+            :aria-label="isStreaming ? 'Hentikan jawaban' : 'Kirim pesan'"
+            :title="isStreaming ? 'Hentikan (Esc)' : 'Kirim pesan'"
+            @click="isStreaming ? stop() : submit()"
+          >
+            <AppIcon :name="isStreaming ? 'stop' : 'send'" :size="18" />
+          </button>
           </div>
 
           <p class="mt-2 hidden text-center text-[11px] text-faint sm:block">

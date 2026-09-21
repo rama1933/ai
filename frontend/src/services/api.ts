@@ -33,6 +33,21 @@ export interface SessionSummary {
   updated_at: string
 }
 
+/** Mirrors the backend's stream_agent events plus the transport-only error type. */
+export type StreamEvent =
+  | { type: 'tool'; name: string }
+  | { type: 'sources'; sources: SourceRef[] }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; answer: string; tool_used: string | null; sources: SourceRef[] }
+  | { type: 'error'; detail: string }
+
+export interface StreamChatBody {
+  session_id: string
+  message: string
+  attachments?: string[]
+  truncate_after_id?: number
+}
+
 export interface UploadResponse {
   filename: string
   status: string
@@ -63,6 +78,14 @@ http.interceptors.request.use((config) => {
  * or expired. Without this the UI keeps rendering the chat and every send
  * fails with a raw axios message, leaving the person stuck on a dead screen.
  */
+export function handleUnauthorized(): Promise<never> {
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(ROLE_KEY)
+  localStorage.removeItem(USERNAME_KEY)
+  window.location.reload()
+  return new Promise(() => {}) // the page is being replaced; never settle
+}
+
 http.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -71,11 +94,7 @@ http.interceptors.response.use(
     const isAuthCall = url.includes('/auth/')
 
     if (status === 401 && !isAuthCall) {
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem(ROLE_KEY)
-      localStorage.removeItem(USERNAME_KEY)
-      window.location.reload()
-      return new Promise(() => {}) // the page is being replaced; never settle
+      return handleUnauthorized()
     }
     return Promise.reject(error)
   },
@@ -88,7 +107,9 @@ http.interceptors.response.use(
  * "absent" as "empty" need this rather than a raw status read.
  */
 export function isNotFound(error: unknown): boolean {
-  return axios.isAxiosError(error) && error.response?.status === 404
+  if (axios.isAxiosError(error)) return error.response?.status === 404
+  // streamMessage bypasses axios; it attaches the status to what it throws.
+  return (error as { status?: number } | null)?.status === 404
 }
 
 /** Turn a thrown value into something worth showing a person. */
@@ -116,6 +137,16 @@ export function describeError(error: unknown): string {
       return detail || 'Model lokal sedang tidak tersedia. Coba lagi sebentar lagi.'
     default:
       return detail || `Terjadi kesalahan pada server (${status}).`
+  }
+}
+
+function parseSseFrame(frame: string): StreamEvent | null {
+  const line = frame.split('\n').find((l) => l.startsWith('data: '))
+  if (!line) return null
+  try {
+    return JSON.parse(line.slice('data: '.length)) as StreamEvent
+  } catch {
+    return null // a malformed frame is dropped, not fatal
   }
 }
 
@@ -172,5 +203,60 @@ export const api = {
 
   async deleteSession(sessionId: string): Promise<void> {
     await http.delete(`/sessions/${sessionId}`)
+  },
+
+  /**
+   * POST /chat/stream as an async generator of parsed events.
+   *
+   * Axios cannot expose a streaming body in the browser and EventSource cannot
+   * send a POST or an Authorization header, so this is the one place that
+   * bypasses the axios instance. It must therefore reproduce what the
+   * interceptors do: attach the bearer token and clear storage on 401.
+   */
+  async *streamMessage(body: StreamChatBody, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    const token = localStorage.getItem(TOKEN_KEY)
+    const base = http.defaults.baseURL ?? ''
+    const response = await fetch(`${base}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal,
+    })
+
+    if (response.status === 401) {
+      await handleUnauthorized()
+      return
+    }
+    if (!response.ok || !response.body) {
+      let detail = ''
+      try {
+        const data = await response.json()
+        if (data && typeof data === 'object' && 'detail' in data) detail = String(data.detail)
+      } catch {
+        // non-JSON error body
+      }
+      throw Object.assign(new Error(detail || `stream failed (${response.status})`), { status: response.status })
+    }
+
+    // SSE frames end with \n\n but a chunk boundary can land mid-frame, so the
+    // reader keeps a carry buffer and only parses complete frames.
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let carry = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      carry += decoder.decode(value, { stream: true })
+      let boundary = carry.indexOf('\n\n')
+      while (boundary !== -1) {
+        const event = parseSseFrame(carry.slice(0, boundary))
+        carry = carry.slice(boundary + 2)
+        if (event) yield event
+        boundary = carry.indexOf('\n\n')
+      }
+    }
   },
 }

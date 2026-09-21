@@ -31,6 +31,7 @@ withDefaults(
       | 'more'
       | 'panel'
       | 'message'
+      | 'stop'
     size?: number
   }>(),
   { size: 18 },
@@ -156,6 +157,10 @@ withDefaults(
 
     <template v-else-if="name === 'message'">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </template>
+
+    <template v-else-if="name === 'stop'">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
     </template>
   </svg>
 </template>
