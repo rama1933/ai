@@ -1,0 +1,10 @@
+KEBIJAKAN PENGELOLAAN DOKUMEN PERUSAHAAN
+
+Pasal 1 — Masa Retensi
+Seluruh dokumen keuangan disimpan selama 5 (lima) tahun sejak tanggal penerbitan.
+
+Pasal 2 — Cuti Karyawan
+Setiap karyawan tetap berhak atas cuti tahunan sebanyak 12 (dua belas) hari kerja.
+
+Pasal 3 — Akses Dokumen
+Akses terhadap dokumen rahasia hanya diberikan kepada pemegang peran ADMIN.
