@@ -36,7 +36,7 @@ Where a row holds only under a stated scope limit, the limit is written into the
 | 20 | Security | Prompt injection mitigation | **PASS** |
 | 21 | Security | `.env` tidak masuk Git | **PASS** |
 | 22 | Security | Conversation reads are owner-scoped (`GET /chat/history`, `POST /chat`) | **PASS** — `12 passed, 1 warning in 7.66s` (see the SP0 section below) |
-| 23 | Security | The SQL tool cannot reach `chat_history` | **PASS** — `2 passed, 10 deselected, 1 warning in 0.47s` (see the SP0 section below). Scope limit: `-k sql_tool` selects only the two query-text tests; the role's grant — the actual boundary — is asserted separately, `1 passed, 11 deselected, 1 warning in 0.22s` |
+| 23 | Security | The SQL tool cannot reach `chat_history` | **PASS** — `2 passed, 10 deselected, 1 warning in 0.47s` (see the SP0 section below). No scope limit; command coverage note: `-k sql_tool` selects only the two query-text tests; the role's grant — the actual boundary — is asserted separately, `1 passed, 11 deselected, 1 warning in 0.22s` |
 
 No row is UNVERIFIED.
 
@@ -350,10 +350,10 @@ tests/test_ownership.py::test_sql_tool_still_reaches_documents PASSED    [100%]
 ================= 2 passed, 10 deselected, 1 warning in 0.47s ==================
 ```
 
-**Row 23 PASS, under a stated scope limit.** `-k sql_tool` matches the two tests that exercise the
-query-text check in `tools/sql_tool.py` — `chat_history` is rejected with `SqlRejected`, `documents`
-still returns rows — but it does **not** match the test that proves the role's privilege is gone. That
-check is the boundary, so it was run as well:
+**Row 23 PASS, no scope limit — the requirement holds unconditionally.** `-k sql_tool` matches the two
+tests that exercise the query-text check in `tools/sql_tool.py` — `chat_history` is rejected with
+`SqlRejected`, `documents` still returns rows — but it does **not** match the test that proves the
+role's privilege is gone. That check is the boundary, so it was run as well:
 
 ```text
 $ cd backend && ../.venv/bin/pytest tests/test_ownership.py -k rag_readonly -v
