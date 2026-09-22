@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from config import get_settings
+
 # The three values security.ROLES and the users_role_check constraint already carry.
 # Spelled out here so Pydantic rejects a fourth at the edge, before the database does.
 Role = Literal["ADMIN", "USER", "READ_ONLY"]
@@ -11,6 +13,25 @@ Role = Literal["ADMIN", "USER", "READ_ONLY"]
 class IngestResponse(BaseModel):
     filename: str
     chunks: int
+
+
+class IngestTextRequest(BaseModel):
+    """Text typed or pasted into the console. `title` names the document; without
+    one it is stored as "catatan"."""
+
+    # The ceiling is here, not only in store_text_file: by the time that runs, the
+    # body has been parsed into a str and encoding it makes a second copy of it. The
+    # same limit as an upload, so the two ways in refuse at the same size.
+    # ponytail: this bounds what this process copies, not what Starlette already
+    # buffered -- an oversized body is read into memory before any model sees it.
+    # A Content-Length guard in main.py is the fix for that, and it is not this route's.
+    content: str = Field(min_length=1, max_length=get_settings().max_upload_bytes)
+    title: str | None = Field(default=None, max_length=200)
+
+
+class IngestUrlRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2000)
+    title: str | None = Field(default=None, max_length=200)
 
 
 class UploadResponse(BaseModel):

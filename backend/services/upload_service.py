@@ -109,6 +109,31 @@ def _safe_name(filename: str) -> str:
     return UNSAFE_NAME_CHARS.sub("_", stem)
 
 
+def store_text_file(text: str, name: str) -> Path:
+    """Write pasted or fetched text to disk under a stored name and return it.
+
+    Text and URL ingests are put in the same shape as an upload -- `{uuid}-{name}.txt`
+    in upload_dir -- so the corpus, the storage total and DELETE /admin/documents
+    keep working on one kind of thing rather than three.
+    """
+    settings = get_settings()
+    payload = text.encode("utf-8")
+    if not payload.strip():
+        raise UploadRejected("text is empty")
+    if len(payload) > settings.max_upload_bytes:
+        raise UploadRejected(f"text size exceeds {settings.max_upload_bytes} bytes")
+
+    # A title typed as a filename keeps its meaning, not its extension: the stored
+    # .txt is what load_text recognises, so whatever came in has to give way to it.
+    stem = re.sub(r"\.(txt|md|pdf|x?html?)$", "", _safe_name(name)[:80], flags=re.IGNORECASE) or "catatan"
+
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"{uuid.uuid4().hex}-{stem}.txt"
+    target.write_bytes(payload)
+    return target
+
+
 def save_upload(file: UploadFile, allowed_kinds: set[str]) -> Path:
     settings = get_settings()
     head = file.file.read(READ_CHUNK)

@@ -35,6 +35,7 @@ withDefaults(
       | 'copy'
       | 'database'
       | 'history'
+      | 'link'
     size?: number
   }>(),
   { size: 18 },
@@ -160,6 +161,11 @@ withDefaults(
 
     <template v-else-if="name === 'message'">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </template>
+
+    <template v-else-if="name === 'link'">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
     </template>
 
     <template v-else-if="name === 'stop'">

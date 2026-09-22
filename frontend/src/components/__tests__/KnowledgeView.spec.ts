@@ -56,7 +56,10 @@ describe('KnowledgeView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('button[aria-expanded]').trigger('click')
+    // By its label, not by `button[aria-expanded]`: the source toggles carry that
+    // attribute too, and they come first in the DOM.
+    const rowToggle = wrapper.findAll('button').find((b) => b.text().includes(ROW.display_name))
+    await rowToggle?.trigger('click')
     await flushPromises()
 
     expect(api.admin.listChunks).toHaveBeenCalledWith(ROW.filename)
@@ -106,5 +109,65 @@ describe('KnowledgeView', () => {
     await flushPromises()
 
     expect(wrapper.find('[role="alert"]').text()).toContain('boom')
+  })
+
+  it('ingests pasted text through the text panel', async () => {
+    const spy = vi.spyOn(api, 'ingestText').mockResolvedValue({ filename: 'x-sp2.txt', chunks: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('#knowledge-text-body').exists()).toBe(false)
+    await wrapper.find('button[aria-controls="knowledge-text-panel"]').trigger('click')
+
+    await wrapper.find('#knowledge-text-title').setValue('Kebijakan cuti')
+    await wrapper.find('#knowledge-text-body').setValue('  cuti tahunan 12 hari  ')
+    await wrapper.find('#knowledge-text-panel').trigger('submit')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith({ content: 'cuti tahunan 12 hari', title: 'Kebijakan cuti' })
+    expect(wrapper.find('#knowledge-text-panel').exists()).toBe(false) // panel closes on success
+    expect(api.admin.listDocuments).toHaveBeenCalledTimes(2) // the table refreshes
+  })
+
+  it('sends a URL to the backend rather than fetching it here', async () => {
+    const spy = vi.spyOn(api, 'ingestUrl').mockResolvedValue({ filename: 'x-kebijakan.txt', chunks: 2 })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('button[aria-controls="knowledge-url-panel"]').trigger('click')
+    await wrapper.find('#knowledge-url').setValue(' https://contoh.id/kebijakan ')
+    await wrapper.find('#knowledge-url-panel').trigger('submit')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledWith({ url: 'https://contoh.id/kebijakan', title: undefined })
+    expect(wrapper.find('#knowledge-url-panel').exists()).toBe(false)
+  })
+
+  it('keeps the draft when the server refuses it', async () => {
+    vi.spyOn(api, 'ingestUrl').mockRejectedValue(new Error('file:// is not a readable page'))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('button[aria-controls="knowledge-url-panel"]').trigger('click')
+    await wrapper.find('#knowledge-url').setValue('https://contoh.id/x')
+    await wrapper.find('#knowledge-url-panel').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('not a readable page')
+    expect(wrapper.find('#knowledge-url-panel').exists()).toBe(true)
+    expect((wrapper.find('#knowledge-url').element as HTMLInputElement).value).toBe('https://contoh.id/x')
+  })
+
+  it('refuses to submit an empty draft', async () => {
+    const spy = vi.spyOn(api, 'ingestText').mockResolvedValue({ filename: 'x.txt', chunks: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('button[aria-controls="knowledge-text-panel"]').trigger('click')
+    await wrapper.find('#knowledge-text-body').setValue('   ')
+    await wrapper.find('#knowledge-text-panel').trigger('submit')
+    await flushPromises()
+
+    expect(spy).not.toHaveBeenCalled()
   })
 })

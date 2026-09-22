@@ -15,8 +15,10 @@ import { api, describeError, type ChunkItem, type KnowledgeItem } from '../../se
 import AppIcon from '../AppIcon.vue'
 
 /**
- * What the assistant knows: every ingested file, its chunks, and the two things you
- * would want to do about it -- look inside, or remove it.
+ * What the assistant knows: every ingested document, its chunks, and the two things
+ * you would want to do about it -- look inside, or remove it. It gets in as an
+ * uploaded file, as pasted text, or as a URL; all three become the same stored file
+ * server-side, so the table shows one kind of row.
  *
  * A document is its stored filename (SP2 Decision 1), which is what the API groups
  * by and what every call here addresses.
@@ -46,6 +48,19 @@ watch(deleteOpen, (open) => {
 
 const uploading = ref(false)
 const uploadError = ref<string | null>(null)
+
+// Three ways in, one at a time: a file, pasted text, or a URL. The panel is which
+// of the latter two is open, so switching sources cannot leave a half-typed draft
+// behind a closed panel.
+const panel = ref<'text' | 'url' | null>(null)
+const draftTitle = ref('')
+const draftText = ref('')
+const draftUrl = ref('')
+
+function openPanel(which: 'text' | 'url'): void {
+  panel.value = panel.value === which ? null : which
+  uploadError.value = null
+}
 
 const hasPrevious = computed(() => offset.value > 0)
 const hasNext = computed(() => rows.value.length === PAGE_SIZE)
@@ -130,15 +145,17 @@ async function confirmDelete(): Promise<void> {
   await load()
 }
 
-async function onFileChosen(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = '' // allow re-selecting the same file
-  if (!file) return
+/** Every source lands the same way: index it, then show the corpus it joined. A
+ * failed one keeps its draft on screen so the operator does not retype it. */
+async function ingest(run: () => Promise<unknown>): Promise<void> {
   uploading.value = true
   uploadError.value = null
   try {
-    await api.ingestDocument(file)
+    await run()
+    panel.value = null
+    draftTitle.value = ''
+    draftText.value = ''
+    draftUrl.value = ''
     offset.value = 0
     await load()
   } catch (err) {
@@ -146,6 +163,26 @@ async function onFileChosen(event: Event): Promise<void> {
   } finally {
     uploading.value = false
   }
+}
+
+async function onFileChosen(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // allow re-selecting the same file
+  if (!file) return
+  await ingest(() => api.ingestDocument(file))
+}
+
+async function submitText(): Promise<void> {
+  const content = draftText.value.trim()
+  if (!content) return
+  await ingest(() => api.ingestText({ content, title: draftTitle.value.trim() || undefined }))
+}
+
+async function submitUrl(): Promise<void> {
+  const url = draftUrl.value.trim()
+  if (!url) return
+  await ingest(() => api.ingestUrl({ url, title: draftTitle.value.trim() || undefined }))
 }
 
 function formatDate(value: string): string {
@@ -212,7 +249,118 @@ onMounted(() => {
           @change="onFileChosen"
         />
       </label>
+
+      <button
+        type="button"
+        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
+        :class="panel === 'text' ? 'border-primary/80 text-primary' : ''"
+        :aria-expanded="panel === 'text'"
+        aria-controls="knowledge-text-panel"
+        @click="openPanel('text')"
+      >
+        <AppIcon name="pencil" :size="15" />
+        Tempel teks
+      </button>
+
+      <button
+        type="button"
+        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
+        :class="panel === 'url' ? 'border-primary/80 text-primary' : ''"
+        :aria-expanded="panel === 'url'"
+        aria-controls="knowledge-url-panel"
+        @click="openPanel('url')"
+      >
+        <AppIcon name="link" :size="15" />
+        Dari URL
+      </button>
     </div>
+
+    <form
+      v-if="panel === 'text'"
+      id="knowledge-text-panel"
+      class="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-3"
+      @submit.prevent="submitText"
+    >
+      <label class="text-xs font-medium text-subtle" for="knowledge-text-title">Judul (opsional)</label>
+      <input
+        id="knowledge-text-title"
+        v-model="draftTitle"
+        type="text"
+        maxlength="200"
+        placeholder="mis. Kebijakan cuti tahunan"
+        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+      />
+      <label class="text-xs font-medium text-subtle" for="knowledge-text-body">Isi</label>
+      <textarea
+        id="knowledge-text-body"
+        v-model="draftText"
+        rows="8"
+        placeholder="Tempel teks yang harus diketahui asisten…"
+        class="resize-y rounded-xl border border-border bg-bg px-3 py-2 text-sm leading-relaxed text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+      />
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm text-subtle transition-colors hover:text-fg"
+          @click="panel = null"
+        >
+          Batal
+        </button>
+        <button
+          type="submit"
+          class="cursor-pointer rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="uploading || !draftText.trim()"
+        >
+          {{ uploading ? 'Mengindeks…' : 'Indeks teks' }}
+        </button>
+      </div>
+    </form>
+
+    <form
+      v-if="panel === 'url'"
+      id="knowledge-url-panel"
+      class="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-3"
+      @submit.prevent="submitUrl"
+    >
+      <label class="text-xs font-medium text-subtle" for="knowledge-url">Alamat halaman</label>
+      <input
+        id="knowledge-url"
+        v-model="draftUrl"
+        type="url"
+        required
+        placeholder="https://contoh.id/kebijakan-cuti"
+        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+      />
+      <label class="text-xs font-medium text-subtle" for="knowledge-url-title">Judul (opsional)</label>
+      <input
+        id="knowledge-url-title"
+        v-model="draftTitle"
+        type="text"
+        maxlength="200"
+        placeholder="Kosongkan untuk memakai nama dari URL"
+        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+      />
+      <p class="text-[11px] leading-relaxed text-faint">
+        Halaman diambil sekali oleh server lalu disimpan sebagai teks, jadi isinya tidak berubah
+        sendiri kalau halaman aslinya berubah.
+      </p>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm text-subtle transition-colors hover:text-fg"
+          @click="panel = null"
+        >
+          Batal
+        </button>
+        <button
+          type="submit"
+          class="cursor-pointer rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="uploading || !draftUrl.trim()"
+        >
+          {{ uploading ? 'Mengindeks…' : 'Ambil & indeks' }}
+        </button>
+      </div>
+    </form>
 
     <p
       v-if="uploadError"

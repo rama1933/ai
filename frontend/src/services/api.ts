@@ -268,6 +268,18 @@ export const api = {
     return data
   },
 
+  /** POST /documents/text: pasted text, stored and ingested as a document. */
+  async ingestText(payload: { content: string; title?: string }): Promise<{ filename: string; chunks: number }> {
+    const { data } = await http.post('/documents/text', payload)
+    return data
+  },
+
+  /** POST /documents/url: the backend fetches the page, so CORS never enters it. */
+  async ingestUrl(payload: { url: string; title?: string }): Promise<{ filename: string; chunks: number }> {
+    const { data } = await http.post('/documents/url', payload)
+    return data
+  },
+
   async fetchHistory(sessionId: string): Promise<HistoryItem[]> {
     const { data } = await http.get('/chat/history', { params: { session_id: sessionId } })
     return data
