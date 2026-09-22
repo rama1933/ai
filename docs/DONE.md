@@ -720,6 +720,14 @@ closed each task follows.
   account with a known password. Their `activity_log` rows survive with `user_id` NULL and the
   username snapshot intact — the ON DELETE SET NULL behaviour Task 1's test asserts, observed
   in the wild.
+- After the sweep, the operator reported that the Admin menu did not appear at
+  `localhost:5173`. Two causes, both environmental rather than defects: the uvicorn on :8000
+  had been started before SP2 and served **zero** `/admin/*` routes, and no account in the
+  database carried the `ADMIN` role. That server was restarted on the current code (7 admin
+  routes, confirmed from its own `/openapi.json`) and an account was created for the operator:
+  **`admin`** with password **`rahasia1`** — the requested `rahasia` is 7 characters and
+  `LoginRequest` requires 8, so the login would have been a 422. `docs/screenshots/sp2-sidebar-admin.png`
+  was re-taken signed in as that account.
 
 ## The role boundary, live
 
