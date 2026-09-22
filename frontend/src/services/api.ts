@@ -189,6 +189,10 @@ export function describeError(error: unknown): string {
       return 'Username atau password salah.'
     case 400:
       return detail || 'Permintaan ditolak.'
+    case 403:
+      return detail || 'Anda tidak punya akses ke halaman ini.'
+    case 409:
+      return detail || 'Nama itu sudah dipakai.'
     case 422:
       return detail || 'Berkas tidak dapat diproses.'
     case 503:
