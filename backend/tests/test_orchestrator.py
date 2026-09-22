@@ -544,6 +544,10 @@ def test_a_supported_answer_is_told_apart_from_an_echo_of_the_question():
         "Indonesia menetapkan peraturan ini."
     )
     policy = "[policy.txt] Seluruh dokumen keuangan disimpan selama 5 (lima) tahun sejak tanggal penerbitan."
+    tabalong = (
+        "[Kabupaten_Tabalong.txt] Kabupaten Tabalong memiliki luas 3.767 km2 dan berpenduduk "
+        "218.954 jiwa menurut sensus 2010."
+    )
 
     # (answer, context, question, expected)
     table = [
@@ -560,6 +564,42 @@ def test_a_supported_answer_is_told_apart_from_an_echo_of_the_question():
         ("Berikut jawabannya: masa retensi dokumen keuangan adalah 5 (lima) tahun sejak tanggal penerbitan.", policy, "Berapa lama masa retensi dokumen keuangan?", True),
         ("12 hari.", policy, "Berapa hari cuti tahunan?", True),
         ("Ya.", policy, "Apakah dokumen ini berlaku?", True),
+        # MEASURED LIVE on Kabupaten_Tabalong.txt: the evidence spells its figures with
+        # Indonesian separators and the model restated one with a decimal tail. The check
+        # compared the answer's digits ("376700") against the raw evidence ("3.767"), so
+        # it could never match, and a correct answer to "berikan gambaran tentang
+        # kabupaten tabalong" was refused and replaced by "tidak ditemukan".
+        (
+            "Kabupaten Tabalong memiliki luas 3.767,00 km² dan berpenduduk 218.954 jiwa.",
+            tabalong,
+            "berikan gambaran tentang kabupaten tabalong",
+            True,
+        ),
+        # The same answer with a figure nobody wrote is still a fabrication: every word
+        # traces, so only the numeral can catch it, and it does.
+        (
+            "Kabupaten Tabalong memiliki luas 3.767,00 km² dan berpenduduk 999.999 jiwa.",
+            tabalong,
+            "berikan gambaran tentang kabupaten tabalong",
+            False,
+        ),
+        # The figure nobody wrote, one digit away from one somebody did: reading a token
+        # in both of its spellings glues "1.500.000,00" into "150000000" and lets this
+        # through, which is why there is one spelling per token and not two.
+        (
+            "Harga tanah adalah Rp 150.000.000,00 per meter persegi.",
+            "[harga.txt] Harga tanah adalah Rp 1.500.000,00 per meter persegi.",
+            "berapa harga tanah?",
+            False,
+        ),
+        # The corpus mixes conventions: the Wikipedia dumps carry English-style figures,
+        # where the comma groups and the dot is not a grouping separator at all.
+        (
+            "Kabupaten Tabalong memiliki luas 3.767 km2 (1,454 sq mi) dan kepadatan 72/km2.",
+            "[Kabupaten_Tabalong.txt] Luas 3.767 km2 (1,454 sq mi) dan kepadatan 72/km2.",
+            "gambaran kabupaten tabalong",
+            True,
+        ),
     ]
 
     for answer, context, question, expected in table:

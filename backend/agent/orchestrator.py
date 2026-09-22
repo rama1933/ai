@@ -86,6 +86,28 @@ _WORD = re.compile(r"[a-z]{3,}")
 # someone had to read somewhere, never a word that can be traced lexically.
 _NUMBER = re.compile(r"\d[\d.,]*")
 
+
+def _figures(text: str) -> set[str]:
+    """Every figure in `text`, as digits, under both conventions this corpus writes.
+
+    Indonesian groups thousands with '.' and starts the decimal with ',', so "3.767,00"
+    and "3.767" are one figure: 3767. The Wikipedia dumps here also carry English-style
+    figures -- "(1,454 sq mi)" -- where the comma does the grouping, so a comma reads as
+    a grouping one only when exactly three digits follow it and the token has no dot.
+
+    One figure per token, never both spellings of it. Gluing a token's digits together
+    to get a second spelling ("1.500.000,00" -> "150000000") invents the digits of a
+    number ten times larger, and an answer claiming "Rp 150.000.000" then matches
+    evidence that says Rp 1.500.000,00 -- measured, it did.
+    """
+    figures: set[str] = set()
+    for token in _NUMBER.findall(text):
+        head, comma, tail = token.rpartition(",")
+        groups_thousands = bool(comma) and len(tail) == 3 and "." not in token
+        figures.add(re.sub(r"\D", "", head if comma and not groups_thousands else token))
+    return figures
+
+
 # Function words and the assistant's own framing: not counted by the support check
 # below, since they say nothing about the subject. The framing half is load-bearing --
 # measured, "Berikut jawabannya: masa retensi dokumen keuangan adalah 5 (lima) tahun
@@ -162,10 +184,15 @@ def _supported_by(answer: str, context: str, question: str = "") -> bool:
     # the evidence. The caveat is a figure the model computed itself from the rows: it
     # is not in the evidence either, so an aggregate answer is refused. Deliberate --
     # refusing a sum is the safer error on this feature.
-    asked_digits = set(re.findall(r"\d+", question))
+    supplied = _figures(question) | _figures(context)
     for token in _NUMBER.findall(answer):
-        digits = re.sub(r"\D", "", token)
-        if len(digits) >= 4 and digits not in asked_digits and digits not in context:
+        if len(re.sub(r"\D", "", token)) < 4:
+            continue
+        # The answer's figure counts as read if the question or the evidence spells it
+        # the same way in either spelling. Comparing the answer's digits against the raw
+        # context, as this did at first, could never match the evidence's own "218.954"
+        # -- measured live, that refused a correct summary of Kabupaten_Tabalong.txt.
+        if not _figures(token) & supplied:
             return False
 
     if not words:  # "Ya." or an echo of the question: nothing new is claimed
