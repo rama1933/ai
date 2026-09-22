@@ -8,22 +8,42 @@ import {
   DropdownMenuTrigger,
 } from 'reka-ui'
 
+import { useAuth } from '../composables/useAuth'
 import { useSessions } from '../composables/useSessions'
+import { useView, type View } from '../composables/useView'
 import AppIcon from './AppIcon.vue'
 
 /**
- * The rail's inner panel: new-conversation button, title filter, and the
- * grouped list. Shared by the permanent rail and the mobile drawer, so this
- * component owns no shell chrome of its own.
+ * The rail's inner panel: new-conversation button, title filter, the grouped
+ * list, and -- for an admin -- the console menu pinned at the bottom. Shared by
+ * the permanent rail and the mobile drawer, so this component owns no shell
+ * chrome of its own and both shells get the menu for free.
  */
 const emit = defineEmits<{
   new: []
   selectRow: [id: string]
   saveRename: [id: string, title: string]
   deleteRequest: [id: string]
+  /** An admin screen was opened. Deliberately not `navigate`: the shells treat
+   * that one as "a conversation became active" and send the view back to chat,
+   * which would bounce straight off the screen just opened. */
+  openView: [view: View]
 }>()
 
 const { sessions, activeId, isLoading, error } = useSessions()
+const { role } = useAuth()
+const { view, go } = useView()
+
+const ADMIN_LINKS = [
+  { view: 'admin/knowledge', label: 'Data Training', icon: 'database' },
+  { view: 'admin/logs', label: 'Log Aktivitas', icon: 'history' },
+  { view: 'admin/users', label: 'Pengguna', icon: 'user' },
+] as const
+
+function openView(next: View): void {
+  go(next)
+  emit('openView', next)
+}
 
 const filter = ref('')
 const editingId = ref<string | null>(null)
@@ -208,5 +228,25 @@ function onBlurRename(id: string): void {
         }}
       </p>
     </div>
+
+    <!-- Console menu. Admin only, and rendered rather than disabled: the API's 403
+         is the boundary, so there is nothing to gain by advertising a locked door. -->
+    <nav v-if="role === 'ADMIN'" class="border-t border-border p-3" aria-label="Menu admin">
+      <p class="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Admin</p>
+      <ul class="flex flex-col gap-0.5">
+        <li v-for="link in ADMIN_LINKS" :key="link.view">
+          <button
+            type="button"
+            class="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors duration-150"
+            :class="view === link.view ? 'bg-elevated text-fg' : 'text-subtle hover:bg-elevated/60'"
+            :aria-current="view === link.view ? 'page' : undefined"
+            @click="openView(link.view)"
+          >
+            <AppIcon :name="link.icon" :size="14" :class="view === link.view ? 'text-primary' : 'text-faint'" />
+            <span class="truncate">{{ link.label }}</span>
+          </button>
+        </li>
+      </ul>
+    </nav>
   </div>
 </template>

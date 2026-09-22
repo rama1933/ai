@@ -18,6 +18,7 @@ import {
 } from 'reka-ui'
 
 import { useSessions } from '../composables/useSessions'
+import type { View } from '../composables/useView'
 import SessionSidebarBody from './SessionSidebarBody.vue'
 
 /**
@@ -27,7 +28,7 @@ import SessionSidebarBody from './SessionSidebarBody.vue'
  * new button, filter, list, row menus -- is shared by both shells.
  */
 const props = defineProps<{ variant: 'rail' | 'drawer'; open?: boolean }>()
-const emit = defineEmits<{ navigate: []; close: [] }>()
+const emit = defineEmits<{ navigate: []; openView: [view: View]; close: [] }>()
 
 const { sessions, activeId, create, rename, remove, select } = useSessions()
 
@@ -85,6 +86,7 @@ async function onConfirmDelete(): Promise<void> {
       @new="onNew"
       @select-row="onSelect"
       @save-rename="onSaveRename"
+      @open-view="(view: View) => emit('openView', view)"
       @delete-request="(id) => ((pendingId = id), (deleteOpen = true))"
     />
   </aside>
@@ -102,6 +104,7 @@ async function onConfirmDelete(): Promise<void> {
           @new="onNew"
           @select-row="onSelect"
           @save-rename="onSaveRename"
+          @open-view="(view: View) => emit('openView', view)"
           @delete-request="(id) => ((pendingId = id), (deleteOpen = true))"
         />
       </DialogContent>

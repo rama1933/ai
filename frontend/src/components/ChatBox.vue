@@ -139,12 +139,15 @@ const canSend = computed(
 
 <template>
   <div class="flex h-dvh overflow-hidden bg-bg">
+    <!-- An admin screen's hash change swaps this component out for AdminLayout, so
+         the only thing left to do here is close the drawer behind it. -->
     <SessionSidebar variant="rail" @navigate="onSidebarNavigate" />
     <SessionSidebar
       variant="drawer"
       :open="drawerOpen"
       @close="drawerOpen = false"
       @navigate="onSidebarNavigate"
+      @open-view="drawerOpen = false"
     />
 
     <div class="flex h-dvh min-w-0 flex-1 flex-col bg-bg">

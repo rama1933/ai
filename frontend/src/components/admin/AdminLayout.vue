@@ -54,7 +54,13 @@ function onSidebarNavigate(): void {
 <template>
   <div class="flex h-dvh overflow-hidden bg-bg">
     <SessionSidebar variant="rail" @navigate="onSidebarNavigate" />
-    <SessionSidebar variant="drawer" :open="drawerOpen" @close="drawerOpen = false" @navigate="onSidebarNavigate" />
+    <SessionSidebar
+      variant="drawer"
+      :open="drawerOpen"
+      @close="drawerOpen = false"
+      @navigate="onSidebarNavigate"
+      @open-view="drawerOpen = false"
+    />
 
     <div class="flex h-dvh min-w-0 flex-1 flex-col bg-bg">
       <header class="border-b border-border bg-surface/80 backdrop-blur-md">
