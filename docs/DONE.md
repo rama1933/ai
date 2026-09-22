@@ -883,3 +883,208 @@ Recorded so no reviewer hunts for them:
 - Date-range filters are converted to whole days (`since` → `T00:00:00`, `until` → `T23:59:59`)
   in the logs screen, and an offset-aware ISO string is brought into the naive `created_at`
   frame server-side (`_naive` in `admin.py`), so a range includes the day it names.
+
+---
+
+# The grounding fix — the assistant answered from outside its knowledge base
+
+Reported after SP2: *"harusnya chatbot hanya bisa menjawab dari data yang ada di pengetahuan
+nya, sekarang masih bisa menjawab diluar knowledge."* The `documents` table is the knowledge
+base; the assistant was answering from the weights of `llama3.2:3b` instead.
+
+## The four shapes, reproduced live before anything was changed
+
+Dev database, 617 chunks, `llama3.2:3b`, temperature 0 seed 0. `run_agent` called directly:
+
+| Question | `tool_used` | `sources` | Answer |
+|---|---|---|---|
+| Apa ibu kota Kanada? | `rag_search` | `[]` | **"Ibu kota Kanada adalah Ottawa."** |
+| Jelaskan apa itu fotosintesis. | `rag_search` | `[]` | a complete fabricated essay on photosynthesis |
+| Siapa presiden pertama Indonesia? | `rag_search` | 4 chunks, all irrelevant | **"Presiden pertama Indonesia adalah Sukarno."** |
+| Siapa presiden pertama Indonesia? (policy.txt attached to the session) | `rag_search` | 1 chunk, score 0.6072 | **"Presiden pertama Indonesia adalah Sukarno."** |
+| Berapa harga tiket kereta Jakarta-Bandung? | `rag_search` | `[]` | correctly admitted the miss |
+
+The third and fourth are the worse pair: four citation chips rendered beside the invention, so
+the fabricated answer arrived looking corroborated. `MessageBubble.vue` shows the chips with
+`score.toFixed(2)`, and the client's `useChat.ts` paints deltas as they arrive — there was no
+`done`-time retraction that could have hidden it.
+
+## Root cause — two halves, and only one of them was the model
+
+1. **The prompt told it not to retrieve.** `SYSTEM_PROMPT` said to use a tool *"HANYA jika
+   pertanyaan user menyebut dokumen, data, gambar, atau file"*. A general question mentions
+   none of those, so answering from memory was the instructed behaviour, not a failure of it.
+2. **No code-level gate existed.** `stream_agent`'s no-tool-call branch returned
+   `content.strip()` as the answer with no check of `tool_used`, of `sources`, or of whether any
+   tool had run at all. The prompt was the only defence, and a 3B model is not one.
+
+## What the obvious fix cannot do — measured, not assumed
+
+The tempting one-line change is to raise `rag_min_score` (0.6 in `config.py`). It cannot work
+here. Top cosine score per question, `nomic-embed-text`, same corpus:
+
+| Question | top score | In the knowledge base? |
+|---|---|---|
+| masa retensi dokumen keuangan | 0.7262 | yes — `policy.txt`, the chunk holding the answer |
+| harga tiket kereta Jakarta-Bandung | 0.7073 | **no** |
+| siapa presiden pertama Indonesia | 0.7026 | **no** |
+| siapa yang boleh mengakses dokumen rahasia | 0.6794 | yes — `policy.txt` |
+| berapa hari cuti tahunan karyawan tetap | 0.6412 | yes — `policy.txt` is not even in the top 4 |
+| apa itu fotosintesis | 0.6201 | **no** |
+| apa ibu kota Kanada | 0.6015 | **no** |
+
+The unrelated questions outscore a correct hit. **No value of `rag_min_score` separates these
+sets**, and raising it refuses real answers while still passing the fabrications. This is why
+"empty `sources`" was never a usable signal either: it only fires on whichever questions
+happen to fall under 0.6, which on this corpus is a coin toss on a 0.0015 margin.
+
+Two more signals were ruled out the same way. `tool_used` is not one — the Sukarno fabrication
+carried `tool_used=rag_search`, the same value `test_e2e_matrix.py::test_rag_001` requires of a
+legitimate retrieval. `sources` is not one either — `sql_query` returns none on success, and the
+scoped-rag fallback (`first_chunks`) returns four.
+
+## The fix — two layers, because the two shapes need different answers
+
+**Layer 1 — nothing is shown until a tool has read something.** `ToolOutcome` gained
+`grounded: bool`, set false at the six sites that return nothing to answer from: the
+`rag_search` no-match sentinel, a rejected or failed `sql_query`, an **empty** result set
+(`repr([])` is a success-shaped `"[]"`), OCR that read no lines, and an unknown tool.
+`stream_agent` tracks `grounded` across the turn and passes it to
+`_accumulate(..., release=False)`, which withholds the whole turn instead of yielding deltas.
+An ungrounded answer therefore never reaches the screen, and never reaches the `finally` block
+in `routers/chat.py` that persists partial text when the client presses Stop. It gets one
+nudged retry — unless `rag_search` has already run and come back empty, in which case asking
+again buys nothing — and then `NOT_IN_KNOWLEDGE_ANSWER`.
+
+**Layer 2 — an answer must trace to what the tools actually supplied.** Layer 1 cannot see the
+other shapes, because the tools *did* return content: the turn is grounded, and the model wrote
+its own text anyway. Every grounded turn is therefore held whole and released only if
+`_supported_by` finds the answer's **informing** vocabulary in the evidence. Three refinements,
+each measured rather than assumed:
+
+- **Only words the question did not already supply count.** The first version counted every
+  word, and against a real decree paragraph — one that says "Republik Indonesia", as they all
+  do — the fabricated *"Ir. Soekarno adalah presiden pertama Indonesia."* traced
+  presiden/pertama/indonesia straight into the boilerplate and scored **0.50, exactly on the
+  bar**. Its one informing word, "soekarno", traces nowhere: **0.00**. The threshold is 0.75;
+  real answers measure 1.00, a padded fabrication 0.50.
+- **Framing words do not count against an answer.** "Berikut jawabannya: …" measured 0.71
+  before the stopword list carried the framing and 1.00 after — a correct answer must not be
+  refused for how it was introduced.
+- **A 4+-digit figure must appear in the evidence.** A numeral carries no vocabulary, so the
+  word halves cannot see one: *"Harga tiket kereta Jakarta-Bandung adalah Rp 150.000."* shares
+  every word with its question, has no novel word at all, and scored 1.00. This is the same
+  rule the e2e matrix's own fabrication check uses. An answer of no informing words at all
+  ("Ya.", or an echo of the question) claims nothing new and passes; a short answer is not
+  refused for being short ("12 hari." traces to the chunk and is delivered).
+
+**The check runs on every grounded turn, not only a retrieval-grounded one.** Found by the
+adversarial pass, and reproduced live before it was believed:
+*"Berapa jumlah baris pada tabel documents, dan siapa presiden pertama Indonesia?"* grounds on
+`sql_query` alone and answered *"…adalah 617 baris. **Presiden pertama Indonesia adalah
+Sukarno.**"* — a fabricated half shipped on the strength of the other half's rows, because an
+earlier version switched the check off as soon as any non-retrieval tool grounded the turn.
+
+**Small talk is the one lane that answers without retrieval**, and it is now sent with no tool
+schemas at all (`_chat_stream(..., offer_tools=False)`). Offering them was not a strong enough
+deterrent: `llama3.2:3b` called `rag_search` on *"Halo, perkenalkan dirimu dalam satu kalimat."*
+and answered out of the chunks it got back, which failed
+`test_e2e_matrix.py::test_agent_001`. With nothing to call, the spec matrix's "a greeting is
+answered with `tool_used` None" is deterministic instead of a hope.
+
+`_is_small_talk` is a word list, deliberately narrow and pessimistic. Its two lanes: a
+self-referential question ("perkenalkan dirimu…") may carry any trailing text, because the
+corpus can never answer it; a greeting may carry **no word outside a closed filler set**, which
+is stricter than it sounds and was tightened after review. The first version allowed two spare
+words, and measured on the tree it called *"halo retensi"*, *"hai, otentikasi?"* and *"halo
+retensi dokumen?"* greetings — short knowledge questions answered with no tool at all. *"Apa
+kabar dokumen saya?"* passed the same way and was answered *"Semua dokumen Anda tersimpan
+dengan baik dan retensinya 10 tahun."* A greeting prefix does not launder a question, a digit
+disqualifies the message, and the filler set is deliberately **not** the stopword list the
+support check uses: `dokumen` carries no subject there and is exactly the subject here. That
+conflation is what let the first version pass its own test.
+
+## What this does not fix
+
+- **A fabrication padded heavily enough with passage vocabulary crosses the layer-2 bar.** It is
+  lexical overlap, not entailment. An entailment call is the upgrade, at the cost of one more
+  generation per answer.
+- **A figure the model computed itself is refused.** The numeric rule wants every 4+-digit
+  figure to appear in the evidence, and an aggregate the model summed from returned rows is not
+  in the evidence. Refusing a sum is the safer error here, but it is an error.
+- **Layer 2 will refuse some legitimate paraphrases** whose vocabulary is synonyms rather than
+  the passages' own words. It was measured on one corpus; treat 0.75 as tuned, not principled.
+- **Retrieval still cannot honestly report "not found"** on this corpus, for the score reason
+  above. The gate compensates for weak retrieval rather than repairing it. Reranking and hybrid
+  search are the real answer and remain on spec §25's roadmap.
+- **No grounded answer streams token by token any more — only small talk does.** An answer is
+  delivered whole in the `done` event, because the support check needs the complete answer and a
+  delta already painted cannot be taken back. This started as a retrieval-only cost and became
+  total when the check moved to every grounded turn (see the compound-question leak above); the
+  `delta` event is now effectively the greeting lane's. It is a real product regression, chosen
+  deliberately against the alternative of shipping an unverifiable answer, and it is pinned by
+  `test_a_grounded_answer_is_released_only_by_done` so it cannot change by accident. Streaming
+  for every turn is one line *if* the gate is relaxed to withhold only retrieval-grounded turns
+  — which reopens the compound-question leak.
+- **`first_chunks` still reports `score=1.0`** for opening chunks it never scored, so a
+  legitimate scoped summary still shows a perfect confidence chip in the UI. Left alone here:
+  it is a display honesty issue, not an answer one, and it is one line when someone wants it.
+- **A refused turn still flashes its citation chips first.** `sources` is emitted at dispatch
+  time and only cleared by `done.sources = []`, so for the seconds the model spends generating,
+  chips for chunks the answer turned out not to use sit beside an answer that is about to become
+  "tidak ditemukan". The end state is right, the chunks are real ones that were genuinely
+  retrieved (not invented), and fixing it means holding the `sources` event behind the gate --
+  a change to the SSE contract for a transient display. Left as a wart, deliberately.
+- **A retrieval-backed turn that the client aborts now persists no assistant row at all.**
+  `routers/chat.py`'s `finally` block writes `"".join(parts)`, and for these turns `parts` stays
+  empty, so pressing Stop mid-answer leaves the question with no reply on reload. This is the
+  gate working as intended — the withheld text was never approved, and writing it down is the
+  fabrication the fix exists to prevent — but it does override the earlier deliberate choice that
+  "a stopped answer that vanishes on reload is worse than a truncated one that stays". Greeting,
+  `sql_query` and OCR turns still stream and still persist their partial text. No test covered
+  the abort path before or after; it is recorded here rather than left to be discovered.
+
+## Verification
+
+| What | Command | Result |
+|---|---|---|
+| Fast suite, before the change | `../.venv/bin/pytest tests/ -m "not integration" -q` | 171 passed, 10 deselected |
+| Fast suite, after | same | **197 passed, 10 deselected** — 26 added, none broken |
+| Live model suite | `../.venv/bin/pytest tests/ -m integration -q` | **10 passed** — including `test_agent_001`, red before the small-talk lane and green after |
+| Ten live questions, after every fix | `run_agent` on the four original leak shapes, the scoped shape, the compound sql+prose shape, *"Apa kabar dokumen saya?"*, and three legitimate questions | **0 fabrications reached the user**; the three legitimate answers came back correct ("…adalah 5 (lima) tahun sejak tanggal penerbitan", "…cuti tahunan sebanyak 12 (dua belas) hari kerja"), the greeting answered with `tool_used` None |
+| Support-check case table | `_supported_by` on the shipped code, 7 cases | fabrications refused (incl. the 0.50 padding sentence), legitimate answers released (incl. framing and short ones) |
+
+## Tests that changed, and why each one had to
+
+- `test_stream_plain_answer_yields_deltas_then_done` — it asserted that *"berapa retensi?"*, a
+  knowledge question, is answered with no tool call at all, streamed, and delivered. That is the
+  defect written down as a passing test; the phrase in its fixture, "Berdasar dokumen", was a lie
+  about a document nothing had read. Now `test_stream_small_talk_yields_deltas_then_done`: small
+  talk is the lane that still streams, so the delta path keeps its coverage.
+- `test_stream_legitimate_json_answer_is_still_delivered` — same shape ("berapa?"). Its real
+  purpose is the `unsent` flush: the JSON-leak guard holds anything starting with `{` and must
+  release it again when it turns out to be prose. Moved to the small-talk lane, where the flush
+  is what actually decides the outcome, instead of passing for the gate's unrelated reasons.
+- `test_stream_tool_call_blob_is_never_streamed_as_text` — same reasoning, same lane: on a
+  grounded turn the blob is withheld anyway and the assertion would have proved nothing.
+- `test_history_is_included_in_the_prompt` — used the message "lanjutkan", which an ungrounded
+  turn now retries and refuses. The test is about the layout of the history window, so the
+  message became a greeting and one request is still all it asserts on.
+- `test_stream_tool_turn_yields_tool_sources_then_deltas` — deleted, superseded by
+  `test_a_grounded_answer_is_released_only_by_done`, which asserts the same `tool → sources`
+  ordering and adds the answer plus the reason the deltas are gone.
+- `test_system_prompt_and_tools_are_sent_on_every_request` — renamed to
+  `…_for_a_knowledge_question`: a greeting now deliberately sends no tool schemas.
+- `test_an_answer_retrieval_did_not_supply_is_refused` — its fixture used a one-line document
+  title as the retrieved context, which made the fabricated answer score 0.25 and hid that
+  against a real paragraph it scores 0.50 and shipped. The context is now a full decree
+  paragraph, and the case table locks the calibration directly.
+
+Added: the gate tests that assert the *absence* of an answer (a knowledge question with no tool
+call, an empty retrieval, an empty SQL result, an OCR with no attached image); the support pair
+plus its case table; the compound sql+prose turn; the follow-up refusal, pinned as a deliberate
+trade-off rather than left in prose; the small-talk predicate's two parametrised directions; a
+registry-level assertion that an OCR with no attachment is not grounding; and a prompt assertion
+that the "only if the question mentions a document" line is gone. Nothing in the fast suite
+previously asserted that an answer should *not* appear, which is why 171 tests stayed green
+while the agent invented things.
