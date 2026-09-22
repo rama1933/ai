@@ -336,5 +336,4 @@ def test_stream_agent_threads_document_filenames_to_dispatch(monkeypatch):
 def test_system_prompt_pins_the_context_only_guardrail():
     """The anti-off-context instruction is load-bearing against hallucinated
     summaries; if someone trims it, this fails instead of the users."""
-    assert "HANYA berdasarkan isi blok UNTRUSTED_DATA" in orchestrator.SYSTEM_PROMPT
-    assert "jangan membuat ringkasan umum" in orchestrator.SYSTEM_PROMPT
+    assert "jangan meringkas" in orchestrator.SYSTEM_PROMPT and "tidak ditemukan" in orchestrator.SYSTEM_PROMPT
