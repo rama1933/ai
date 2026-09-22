@@ -1,6 +1,11 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# The three values security.ROLES and the users_role_check constraint already carry.
+# Spelled out here so Pydantic rejects a fourth at the edge, before the database does.
+Role = Literal["ADMIN", "USER", "READ_ONLY"]
 
 
 class IngestResponse(BaseModel):
@@ -127,3 +132,29 @@ class LogItem(BaseModel):
 
 class LogPurgeResult(BaseModel):
     deleted: int
+
+
+class AdminUserItem(BaseModel):
+    id: int
+    username: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    sessions: int
+    documents: int
+
+
+class AdminUserCreate(LoginRequest):
+    """LoginRequest's length rules, plus the role the caller may set.
+
+    POST /auth/register keeps creating USER and gains no role parameter: a public
+    endpoint that can mint admins is a hole (SP2 Decision 6). This one is not public.
+    """
+
+    role: Role = "USER"
+
+
+class AdminUserPatch(BaseModel):
+    role: Role | None = None
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=128)
