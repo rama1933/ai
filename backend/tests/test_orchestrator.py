@@ -653,7 +653,10 @@ def test_an_answer_retrieval_did_not_supply_is_refused(monkeypatch):
     done = events[-1]
 
     assert "Soekarno" not in done["answer"]
-    assert "tidak ditemukan" in done["answer"].lower()
+    # The model answered; the answer just did not come from the decree. Saying the knowledge
+    # base has nothing would send the user looking for a document that is not missing.
+    assert done["answer"] == orchestrator.UNSUPPORTED_ANSWER
+    assert "tidak ditemukan di knowledge base" not in done["answer"]
     assert done["sources"] == [], "chips beside a refusal read as corroboration"
     assert "Soekarno" not in "".join(e["text"] for e in events if e["type"] == "delta")
 
@@ -690,7 +693,7 @@ def test_a_second_grounded_tool_does_not_disable_the_support_check(monkeypatch):
     done = list(orchestrator.stream_agent(db=None, message="Siapa presiden pertama Indonesia?", history=[]))[-1]
 
     assert "Soekarno" not in done["answer"]
-    assert "tidak ditemukan" in done["answer"].lower()
+    assert done["answer"] == orchestrator.UNSUPPORTED_ANSWER
 
 
 def test_an_ocr_with_no_attached_image_is_not_grounding(monkeypatch):
@@ -974,7 +977,7 @@ def test_without_that_history_the_same_answer_is_still_refused(monkeypatch):
     from nowhere and the answer goes."""
     events = _receipt_turn(monkeypatch, [])
 
-    assert events[-1]["answer"] == orchestrator.NOT_IN_KNOWLEDGE_ANSWER
+    assert events[-1]["answer"] == orchestrator.UNSUPPORTED_ANSWER
 
 
 def test_the_conversation_is_never_the_evidence(monkeypatch):
@@ -1058,3 +1061,138 @@ def test_read_first_falls_back_to_the_session_scope_when_nothing_is_attached(mon
     )
 
     assert seen == [("abc-laporan.pdf",)]
+
+
+def test_a_read_attachment_tells_the_model_what_to_do_with_it(monkeypatch):
+    """Measured on a 45-chunk decree: asked to READ a file -- "baca isi file ini", "ringkas
+    file ini", "pelajari dokumen ini" -- this model answers "Tidak ditemukan." with the
+    file's own text sitting in the transcript, while the same evidence asked as a question
+    is answered correctly. The refusal is about the shape of the request. A rule added to
+    SYSTEM_PROMPT (do not answer not-found while the tool result holds the file) changed
+    nothing; this note does.
+    """
+    monkeypatch.setattr(
+        registry,
+        "dispatch",
+        lambda *a, **k: registry.ToolOutcome(text="isi file", sources=[SourceRef(filename="laporan.pdf")]),
+    )
+    sent = _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Baik."}]])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="baca isi file ini",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+            attached_documents=["abc-laporan.pdf"],
+        )
+    )
+
+    # The user turn, not messages[-1]: by the time the note is added, the read-first block
+    # has appended its assistant tool-call and tool result after it.
+    user_turn = sent[0]["messages"][1]
+    assert user_turn["role"] == "user"
+    assert user_turn["content"].endswith(orchestrator.ATTACHMENT_READ_NOTE)
+    assert sent[0]["messages"][-1]["role"] == "tool"
+
+
+def test_a_turn_that_read_nothing_carries_no_note(monkeypatch):
+    """A greeting reads nothing, and neither does an attachment whose read came back
+    empty -- telling the model to relay a result that is not there is worse than saying
+    nothing."""
+    monkeypatch.setattr(
+        registry, "dispatch", lambda *a, **k: registry.ToolOutcome(text="nothing", grounded=False)
+    )
+    sent = _mock_ollama(monkeypatch, [_reply(content="Baik."), _reply(content="Baik.")])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="baca isi file ini",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+            attached_documents=["abc-laporan.pdf"],
+        )
+    )
+    assert orchestrator.ATTACHMENT_READ_NOTE not in sent[0]["messages"][1]["content"]
+
+    greeting = _mock_ollama(monkeypatch, [_reply(content="Halo!")])
+    orchestrator.run_agent(db=None, message="halo", history=[])
+    assert orchestrator.ATTACHMENT_READ_NOTE not in greeting[0]["messages"][-1]["content"]
+
+
+def test_the_notes_own_words_do_not_count_against_the_answer():
+    """The answer may echo the note ("Isi file yang dibaca adalah ..."), and a word the
+    model was handed is not an invention -- the same reason the conversation's words are
+    excluded."""
+    echoed = "Isi file yang dilampirkan dan sudah dibaca adalah TOKO MAJU JAYA."
+
+    assert (
+        orchestrator._supported_by(
+            echoed,
+            "[receipt.png] TOKO MAJU JAYA TOTAL 43000",
+            question="baca isi file ini",
+            carried=orchestrator.ATTACHMENT_READ_NOTE,
+        )
+        is True
+    )
+    # Without that exclusion the echo alone sinks a correct answer: 3 of 6 counted words
+    # trace, well under the bar.
+    assert (
+        orchestrator._supported_by(echoed, "[receipt.png] TOKO MAJU JAYA TOTAL 43000", question="baca isi file ini")
+        is False
+    )
+
+
+def test_a_model_that_reports_nothing_found_is_told_apart_from_a_model_that_invented(monkeypatch):
+    """Both land on the same branch and are not the same thing to the user.
+
+    A model that answers "tidak ditemukan" itself is reporting the corpus empty, and the
+    e2e matrix's not-found signal is the honest sentence for it. Anything else is a real
+    answer this check could not hold to the evidence -- the file holds it, the model could
+    not be held to it -- which is a limit of the model and now says so.
+    """
+    monkeypatch.setattr(
+        registry,
+        "dispatch",
+        lambda *a, **k: registry.ToolOutcome(
+            text="[receipt.png] TOKO MAJU JAYA TOTAL 43000", sources=[SourceRef(filename="receipt.png")]
+        ),
+    )
+
+    reported_empty = _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Tidak ditemukan."}]])
+    done = list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Berapa total transaksinya?",
+            history=[],
+            document_filenames=["abc-receipt.png"],
+        )
+    )[-1]
+    assert done["answer"] == orchestrator.NOT_IN_KNOWLEDGE_ANSWER
+    assert reported_empty  # the payload was sent; the wording is what this test is about
+
+    invented = _mock_ollama_chunks(
+        monkeypatch, [[{"role": "assistant", "content": "Toko itu bernama Toko Sumber Rejeki."}]]
+    )
+    done = list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Apa nama tokonya?",
+            history=[],
+            document_filenames=["abc-receipt.png"],
+        )
+    )[-1]
+    assert done["answer"] == orchestrator.UNSUPPORTED_ANSWER
+    assert invented
+
+
+def test_a_turn_that_read_nothing_keeps_the_corpus_wording(monkeypatch):
+    """Nothing was read at all, so the corpus is exactly the thing that has nothing --
+    and this is the sentence the e2e matrix pins."""
+    sent = _mock_ollama(monkeypatch, [_reply(content="Ibu kota Kanada adalah Ottawa."), _reply(content="Ibu kota Kanada adalah Ottawa.")])
+
+    result = orchestrator.run_agent(db=None, message="Apa ibu kota Kanada?", history=[])
+
+    assert result.answer == orchestrator.NOT_IN_KNOWLEDGE_ANSWER
+    assert sent

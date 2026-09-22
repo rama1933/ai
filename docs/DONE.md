@@ -1187,22 +1187,57 @@ name, scoped `rag_search` returns it at 0.60–0.65 (floor 0.6) and `first_chunk
   "Sukarno" ever reached the user. The numeral rule reads figures from the tool output only, for
   the same reason — otherwise a number the user typed in an earlier turn counts as "read
   somewhere".
+- **A file that was read is announced as read (`ATTACHMENT_READ_NOTE`).** Reported from the UI:
+  a PDF attached, *"baca isi file ini"*, refused — with the decree's own header and subject line
+  injected into the transcript. Isolated against the exact prompt, the same evidence asked as a
+  question (*"Apa isi dokumen ini?"*) is answered correctly, so the refusal is about the **shape**
+  of the request and not about what was read: an imperative names no deliverable for this model.
+  A rule added to `SYSTEM_PROMPT` (an "Aturan 4" forbidding *not found* while the tool result
+  holds the file) changed nothing — all three imperatives still refused. One sentence appended to
+  the user turn fixes two of the three.
+
+  It goes on the user turn **by index**, not by `messages[-1]`: by the time it is added, the
+  read-first block has appended its assistant tool-call and tool result after that turn, so
+  `messages[-1]` is the tool result. That was the first version of this, and it is why the note
+  has a test asserting `messages[1]` rather than `messages[-1]`. The note's own words join
+  `carried`, for the same reason the conversation's do — the answer may echo it ("Isi file yang
+  dibaca adalah …") and an echo of what the model was handed is not an invention.
 - **An undecodable image is an OCR failure, not a 500** (`tools/ocr_tool.py`). RapidOCR raises
   bare `OSError`/PIL errors on a file that is not an image and `registry.dispatch` caught only
   `OcrError`. This mattered less when a model had to choose to call the tool; read-first reads
   every attached image, so it now reaches that path on every turn the file is carried.
+- **The two reasons a turn is refused are told apart** (`UNSUPPORTED_ANSWER`). They printed the
+  same sentence, and they are not the same thing: *the corpus has nothing*, versus *the model
+  answered and the answer did not come from what it was given*. Reported from the UI as "masih
+  belum teratasi" — the file was in the corpus and the assistant said it was not there.
+
+  Measured on the attached decree, asked "pelajari dokumen ini": the model **wrote a summary**
+  and the gate refused it, because the summary said the document concerns "Kabupaten Tabanan,
+  Bali". The document is Keputusan Bupati Hulu Sungai Selatan, Kalimantan Selatan, and neither
+  "tabanan" nor "bali" appears anywhere in its 35.612 characters. The gate was right; the
+  sentence it printed was not — the file held the answer, the model could not be held to it.
+
+  So that case now says so, and the not-found wording stays for the case it describes. Which
+  one applies is decided by the model's own phrasing (`_MODEL_REFUSAL`): a model that answers
+  "tidak ditemukan" is reporting the corpus empty, and everything else is a real answer this
+  check could not hold to the evidence. Erring on the safe side — reading a real answer as a
+  refusal — only changes which sentence the user reads.
 
 ## Verification
 
 | What | Command | Result |
 |---|---|---|
 | Fast suite, before | `../.venv/bin/pytest tests/ -m "not integration" -q` | 211 passed, 10 deselected |
-| Fast suite, after | same | **225 passed, 11 deselected** — 14 added, none broken |
+| Fast suite, after | same | **230 passed, 11 deselected** — 19 added, none broken |
 | Live spec matrix | `../.venv/bin/pytest tests/ -m integration -q` | **11 passed** (was 10; `test_ocr_002` added) |
 | The five scenarios above, 3 consecutive runs | `POST /upload` + `POST /chat` against a second uvicorn on :8001 | **5/5 each run** (was 1/5) |
 | Reachability of a kept image extract | `rag_search`/`first_chunks` scoped to the stored name | 0.6008–0.6523, and 1.0 via `first_chunks` |
 | Live adversarial, two turns, receipt attached | turn 1 "Siapa presiden pertama Indonesia?", turn 2 "Sebutkan lagi.", then "Apa ibu kota Kanada?" | all three refused, `tool_used` set, **no "Sukarno" and no "Ottawa" in any answer** |
 | The same over SSE, the endpoint the UI uses | `POST /chat/stream` with the receipt, then a follow-up without it | `tool → sources → done` in order; both turns answered from the image |
+| The reported case, on the real path | the user's own 189 KB decree attached, "baca isi file ini" | **answers** — "Isi file yang dibaca adalah surat keputusan Bupati Hulu Sungai Selatan tentang penetapan subjek redistribusi tanah…" (refused before the note) |
+| The same decree, other phrasings | "ringkas file ini" / "apa isi dokumen ini?" / "pelajari dokumen ini" | answers, answers, refused as a **model limit** |
+| The two refusal reasons, told apart | same decree: "pelajari dokumen ini" (the model invents) / "baca isi file ini" (answers) / "Berapa harga tiket kereta Jakarta-Bandung menurut dokumen ini?" (the document truly has no such thing) | `UNSUPPORTED_ANSWER` / answered from the file / `NOT_IN_KNOWLEDGE_ANSWER` — each sentence on the case it describes |
+| The five scenarios, after the note | `POST /upload` + `POST /chat` on :8001 | **4/4 pass** — no regression from the note |
 | **Driven through the browser** (`localhost:5173`, real backend on :8000) | receipt.png attached: "Menurut dokumen ini, berapa total transaksinya?" → "Total transaksi adalah Rp 43.000." (badge "Baca gambar"); follow-up "Apa nama toko pada struk itu?" → "Toko tersebut bernama Toko Maju Jaya." (chip `receipt.png`, 0.60) | PASS |
 | …and with three files in one session | receipt, a PDF, then a SECOND PDF attached: "Pelajari dokumen ini lalu ringkas isinya." → answered from the newly attached `laporan-gedung.pdf` (0.62), then a follow-up about it without re-attaching | PASS — and this is the turn that failed before `attached_documents` |
 
@@ -1213,6 +1248,21 @@ the test and can be cited by a later unscoped retrieval.
 
 ## What this does not fix
 
+- **"Pelajari dokumen ini" is still refused on the decree** — now as a model limit rather than
+  as a missing document, which is the honest version of the same outcome. The note rescues
+  "baca isi file ini" and "ringkas file ini", and "apa isi dokumen ini?" was never broken; on
+  this one the model reads the instruction, produces a summary, and relocates the decree to
+  another province. **A second lever is on the table and was not taken**: a retry after the
+  support check fails. Measured reasoning against it — the retry fires on the failure, so it is
+  wording-independent, but the failure here is fabrication, and re-asking a model that just
+  invented "Kabupaten Tabanan, Bali" buys another attempt, not a truthful one. The real lever
+  is the model (3B is the only one installed), and the second is feeding a whole 35.612-character
+  document to a 4.096-token context, which it is not: 4 of 45 chunks reach the model, and it
+  fills the rest. Summarising a long attachment needs map-reduce, which is a feature.
+- **The wording split is a distinction, not a repair.** A user reading `UNSUPPORTED_ANSWER`
+  learns the assistant could not be held to the file, not that the file lacks the answer — but
+  they still do not get an answer. The measurement above is what makes that the honest outcome
+  rather than a shrug: the alternative sentence was a lie about the corpus.
 - **An attachment turn now reaches layer 1 already licensed**, because the server read the file.
   That is the point — the read is the user's, not the model's guess — but it leaves layer 2 as
   the only thing between the model and an answer about something else. Hand it a receipt and ask

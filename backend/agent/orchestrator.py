@@ -43,10 +43,32 @@ GIVE_UP_ANSWER = (
 )
 
 # What the user gets instead of an answer the model produced from its own weights.
-# These are the exact words of the e2e matrix's not-found signal; it must stay.
+# These are the exact words of the e2e matrix's not-found signal; it must stay. Used when
+# the corpus is the thing that has nothing -- nothing was read, or the model reported what
+# it read as empty.
 NOT_IN_KNOWLEDGE_ANSWER = (
     "Maaf, informasi tersebut tidak ditemukan di knowledge base. "
     "Saya hanya bisa menjawab berdasarkan isi dokumen yang tersedia."
+)
+
+# The same refusal for the other reason, which is not about the corpus at all: a tool
+# supplied something, the model answered, and the answer did not come from it. The file
+# holds what was asked; the model could not be held to it. Saying "tidak ditemukan di
+# knowledge base" there sends the user looking for a document that is not missing --
+# reported from the UI as "masih belum teratasi" while the file sat in the corpus.
+UNSUPPORTED_ANSWER = (
+    "Maaf, jawaban yang bisa saya susun tidak didukung oleh isi dokumen yang tersedia, "
+    "jadi tidak saya sampaikan. Ini di luar jangkauan model yang sedang berjalan -- "
+    "coba pertanyaan yang lebih spesifik."
+)
+
+# How the model says "I did not find it", so that reason keeps the corpus wording above
+# instead of being reported as a model limit. Deliberately broad in the safe direction:
+# reading a real answer as a refusal only changes which sentence the user sees.
+_MODEL_REFUSAL = re.compile(
+    r"tidak\s+(?:ditemukan|ada|tersedia|ditemui|terdapat|disebutkan|tercantum|"
+    r"memuat|mencantumkan|menyebutkan|dapat|bisa)",
+    re.IGNORECASE,
 )
 
 # Sent back when the model wrote a tool-call blob as prose instead of calling a tool.
@@ -56,6 +78,20 @@ JSON_RETRY_PROMPT = "Balas dengan kalimat biasa dalam bahasa Indonesia, bukan JS
 SEARCH_RETRY_PROMPT = (
     "Jawaban itu tidak memakai tool, jadi tidak bisa dipakai. "
     "Panggil rag_search lebih dulu, lalu jawab hanya dari hasilnya."
+)
+
+# Added to the user turn when read-first actually read something. An INSTRUCTION to read a
+# file ("baca isi file ini", "ringkas file ini") makes this model answer "Tidak ditemukan."
+# with the file's own text sitting in the transcript -- measured on a 45-chunk decree, with
+# the header and the subject line injected. The same evidence asked as a question ("Apa isi
+# dokumen ini?") is answered correctly, so the refusal is about the shape of the request,
+# not about what was read. A rule added to SYSTEM_PROMPT (an "Aturan 4" forbidding not-found
+# while the tool result holds the file) changed nothing: every phrasing still refused.
+# This sentence does, for two of the three imperatives tried; see the note in DONE.md for
+# the one it does not ("pelajari dokumen ini", a request with no stated deliverable).
+ATTACHMENT_READ_NOTE = (
+    "(Isi file yang dilampirkan sudah dibaca dan ada di hasil tool di atas. "
+    "Sampaikan isinya sebagai jawaban.)"
 )
 
 # The only messages allowed to answer without a tool reading anything: a greeting,
@@ -296,14 +332,33 @@ class AgentResult:
     sources: list[SourceRef] = field(default_factory=list)
 
 
-def _refusal(tool_used: str | None) -> dict:
+def _looks_like_a_refusal(content: str) -> bool:
+    """True when the model's own answer is the "I did not find it" sentence.
+
+    The two reasons a turn is refused read the same to a user and are not the same thing,
+    so they are told apart before the message is chosen. This is the one that says the
+    CORPUS has nothing: the model looked at what it was handed and reported it empty.
+    """
+    return bool(_MODEL_REFUSAL.search(content))
+
+
+def _refusal(tool_used: str | None, unsupported: bool = False) -> dict:
     """The done event for a turn with nothing to answer from.
 
     `tool_used` survives -- the audit row and the client badge should still say what was
-    tried -- but the sources do not: citation chips beside "tidak ditemukan" read as
-    corroboration for an answer that is not there.
+    tried -- but the sources do not: citation chips beside a refusal read as corroboration
+    for an answer that is not there.
+
+    `unsupported` is the second reason, and it is not the first: a tool DID supply
+    something, the model DID answer, and the answer did not come from what it was given.
+    Saying "tidak ditemukan di knowledge base" there is a lie about the corpus -- measured
+    on the attached decree, the model summarised it as being about "Kabupaten Tabanan,
+    Bali" (the document is Hulu Sungai Selatan, Kalimantan Selatan, and neither word
+    appears in its 35.612 characters anywhere). The file holds the answer; the model could
+    not be held to it. That is a limit of the model, and it says so.
     """
-    return {"type": "done", "answer": NOT_IN_KNOWLEDGE_ANSWER, "tool_used": tool_used, "sources": []}
+    answer = UNSUPPORTED_ANSWER if unsupported else NOT_IN_KNOWLEDGE_ANSWER
+    return {"type": "done", "answer": answer, "tool_used": tool_used, "sources": []}
 
 
 def _chat_stream(messages: list[dict], offer_tools: bool = True) -> Iterator[dict]:
@@ -503,6 +558,7 @@ def stream_agent(
     settings = get_settings()
     small_talk = _is_small_talk(message)
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": message}]
+    user_index = len(messages) - 1  # the user turn, which read-first must not move past
     if image_paths:
         messages[-1]["content"] += "\n\n(User melampirkan sebuah gambar pada pesan ini.)"
 
@@ -568,6 +624,17 @@ def stream_agent(
             if outcome.sources:
                 yield {"type": "sources", "sources": outcome.sources}
 
+        if grounding_text:
+            # Something was read, so say what to do with it. On the USER turn by index and
+            # not by `messages[-1]`, which is the tool result by now. Added to the prompt
+            # only -- `message` stays the user's bare words, because the support check and
+            # the small-talk predicate both read it. The note's own words join `carried`
+            # for the same reason the history's do: an answer may echo them ("Isi file
+            # yang dibaca adalah ...") and an echo of what the model was handed is not an
+            # invention.
+            messages[user_index]["content"] += "\n\n" + ATTACHMENT_READ_NOTE
+            carried = "\n".join([carried, ATTACHMENT_READ_NOTE])
+
     for _ in range(settings.agent_max_iterations):
         # Deltas are released on the small-talk lane only. Every other turn has to be
         # whole before anything is drawn, because the answer is judged as a whole --
@@ -619,7 +686,12 @@ def stream_agent(
                     # presiden pertama Indonesia?" grounds on sql_query alone and answered
                     # "...adalah 617 baris. Presiden pertama Indonesia adalah Sukarno." --
                     # a fabricated half shipped on the strength of the other half's rows.
-                    yield _refusal(tool_used)
+                    #
+                    # Two different things land here and the user is told which. A model
+                    # that wrote "tidak ditemukan" itself is reporting the corpus empty;
+                    # anything else is a real answer this check could not hold to the
+                    # evidence, which is a limit of the model and not of the documents.
+                    yield _refusal(tool_used, unsupported=not _looks_like_a_refusal(content))
                     return
                 if unsent:
                     # An answer that legitimately begins with "{" was held back whole.
