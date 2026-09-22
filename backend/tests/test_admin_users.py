@@ -148,6 +148,20 @@ def test_a_password_change_is_audited_by_field_name_only(client, admin):
     assert "brandnewpass1" not in str(row.detail)
 
 
+def test_an_explicit_null_field_is_left_alone_not_written(client, admin):
+    """`{"role": null}` is how a client spells "no opinion". It must not be assigned
+    onto a NOT NULL column -- that was a 500 before exclude_none."""
+    headers, _ = admin
+    username = f"target-{uuid.uuid4().hex[:8]}"
+    created = client.post("/admin/users", headers=headers, json={"username": username, "password": PASSWORD}).json()
+
+    response = client.patch(f"/admin/users/{created['id']}", headers=headers, json={"role": None, "is_active": None})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["role"] == "USER"
+    assert response.json()["is_active"] is True
+
+
 def test_patch_of_an_unknown_id_is_404(client, admin):
     headers, _ = admin
 

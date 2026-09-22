@@ -316,7 +316,10 @@ def update_user(
     user: User = Depends(ADMIN_ONLY),
 ) -> AdminUserItem:
     target = _user_or_404(db, user_id)
-    fields = payload.model_dump(exclude_unset=True)
+    # exclude_none as well as exclude_unset: `role` and `is_active` are declared
+    # optional so that omitting them means "leave alone", and an explicit null would
+    # otherwise be assigned straight onto a NOT NULL column and 500.
+    fields = payload.model_dump(exclude_unset=True, exclude_none=True)
 
     # Losing admin rights is the irreversible half: demotion, deactivation, deletion.
     # A password change is not, and an admin may change their own.
