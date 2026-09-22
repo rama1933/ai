@@ -4,6 +4,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from schemas import SourceRef
+from services.document_service import IngestError, ingest_extract
+from services.embedding_service import EmbeddingError
 from services.upload_service import display_name_of
 from tools.ocr_tool import OcrError, image_ocr
 from tools.rag_tool import first_chunks, rag_search
@@ -77,6 +79,40 @@ def _wrap(payload: str) -> str:
     return f"{UNTRUSTED_HEADER}\n{payload}\n{UNTRUSTED_FOOTER}"
 
 
+def _keep_extract(db: Session | None, stored_name: str, path: str, text: str) -> None:
+    """Save what an image just read as the corpus for that image's stored name.
+
+    An image is only readable while it is attached -- the orchestrator hands OCR the
+    paths of THIS message -- so without this the text dies with the turn. Measured
+    live: turn 1 answered "Rp 43.000" from the receipt, and the next turn ("sebutkan
+    lagi totalnya berapa?") refused, because nothing after it could reach the image.
+
+    Committed here, on its own, and not with the answer. The extract is a durable read
+    of a file the user handed over, so it has to survive a turn that produces no answer
+    at all -- which on /chat/stream is every refusal, since the generator's only other
+    commit is its done branch. The four failures this feature exists for all ended in a
+    refusal, so the extract would have been dropped on exactly the turns that need it.
+
+    ponytail: best effort once written, and not rolled back. What the user asked for is
+    the answer, and an embedding outage must not cost them the text already in hand --
+    while rolling back here would take the turn's own chat_history row with it.
+
+    The net is the embedding service's failure modes and nothing else: it parses the
+    model's reply outside its own try, so a 200 that is not the shape EmbeddingError
+    guards arrives as a JSONDecodeError or an AttributeError, and it fails BEFORE any
+    write, leaving the session clean. A database failure is deliberately NOT caught --
+    the turn cannot commit anyway, and swallowing one would only replace a visible 500
+    with a PendingRollbackError raised somewhere less obvious.
+    """
+    if db is None:
+        return
+    try:
+        ingest_extract(db, text, stored_name, source=path)
+    except (IngestError, EmbeddingError, ValueError, AttributeError):
+        return
+    db.commit()
+
+
 def dispatch(
     name: str,
     arguments: dict,
@@ -137,6 +173,10 @@ def dispatch(
                 continue
             sections.append(f"[{display}]\n{text}")
             sources.append(SourceRef(filename=display))
+            # Under the STORED name, not the display name: the scope is rebuilt from
+            # chat_history.attachments[].stored_name, and two uploads of the same
+            # picture share a display name but never a stored one.
+            _keep_extract(db, Path(path).name, path, text)
         # Grounded only when at least one image actually yielded text: the three
         # failure modes above all return a helpful non-empty string, so the text
         # cannot be the signal.

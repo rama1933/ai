@@ -1088,3 +1088,159 @@ registry-level assertion that an OCR with no attachment is not grounding; and a 
 that the "only if the question mentions a document" line is gone. Nothing in the fast suite
 previously asserted that an answer should *not* appear, which is why 171 tests stayed green
 while the agent invented things.
+
+# Attachments are read, kept, and answered from (2026-09-22, branch `fix/grounding-gate`)
+
+## The complaint
+
+"Chatbot membaca dari file yang di upload baik gambar atau pdf … llm hanya membaca dari file
+nya lalu mencari jawaban dari knowledge base. Ganti agar saat ada file yang di attach maka akan
+dibaca dulu lalu disimpan hasil ekstraknya lalu jawaban di berikan sesuai konteks dari file nya."
+
+## The four failures, reproduced live before anything was changed
+
+Against the unmodified tree, real Postgres, real `llama3.2:3b`, one attached file per turn:
+
+| # | Turn | What came back |
+|---|---|---|
+| 1 | image attached, "Menurut dokumen ini, berapa total transaksinya?" | `tool_used=sql_query`, refused |
+| 2 | same session, "Sebutkan lagi totalnya berapa?", no re-attach | `tool_used=sql_query`, refused |
+| 3 | same session, "Apa nama toko pada struk itu?", no re-attach | `tool_used=sql_query`, refused |
+| 4 | PDF attached, then "Siapa penanggung jawab proyek itu?", no re-attach | `tool_used=sql_query`, refused |
+
+1 of 5 scenarios passed. The image question that *did* work ("Berapa total transaksi pada struk
+ini?") worked only because the model happened to call `image_ocr` — not because anything
+guaranteed it.
+
+## Root cause — three breaks, each sufficient on its own
+
+1. **Nothing read the attachment.** `stream_agent` appended a weak aside for images and *nothing
+   at all* for documents; whether the file was consulted was entirely the model's tool choice,
+   and it routed to `sql_query` on every case above.
+2. **Nothing kept what a read produced.** The OCR text existed only inside the `image_ocr` tool
+   call and died with the turn, so a follow-up had no way to reach the image.
+3. **Retrieval could not reach an image anyway.** `_session_document_filenames` filtered
+   `kind == "document"`, so an image's stored name never entered the scope — a scoped
+   `rag_search` was structurally incapable of returning an image's text even after OCR had
+   produced it.
+
+Measured on the follow-up queries, once the extract *was* in the corpus under the image's stored
+name, scoped `rag_search` returns it at 0.60–0.65 (floor 0.6) and `first_chunks` returns it at
+1.0. Retrieval was never the problem; reachability and persistence were.
+
+## The fix
+
+- **Read-first (`agent/orchestrator.py::_read_attachments`).** Before the model is asked
+  anything, the server reads every file the message carries — `image_ocr` for images, a scoped
+  `rag_search` with the user's message as the query for documents — and injects the result as a
+  synthetic assistant tool-call + tool message, the same shape the loop uses for a tool the model
+  chose itself (probe-verified against Ollama before it was relied on). Only grounded readings
+  are injected: an image with no readable text, or a scoped search with no hits, must not put
+  "tidak ditemukan" in the transcript and answer the question for the model. Images go first and
+  their stored names are then dropped from the document scope, so the same text does not enter
+  the conversation twice. Small talk skips the block entirely, which is what keeps the spec
+  matrix's "a greeting answers with `tool_used` None" true when a file rides along.
+
+  **It reads what THIS message attached, not the whole session** (`attached_documents`, threaded
+  from both chat endpoints; the session scope stands in when the turn brings no attachment of its
+  own — which is the follow-up case the scope exists for). Found by driving the UI rather than
+  the API, and only reachable in a session that already held files: with a receipt and a freshly
+  attached PDF both in scope, *"Pelajari dokumen ini lalu ringkas isinya."* was answered out of
+  the **receipt**, because that chunk cleared the 0.6 floor and the PDF's did not — and the
+  `first_chunks` fallback only fires when *nothing* hits, so the file the user had just handed
+  over was never read. One scope for both would have kept it that way.
+- **Keep the extract (`registry.py::_keep_extract` → `document_service.ingest_text`).** The OCR
+  text is written into the corpus under the image's **stored** name, so the file and its text
+  share one handle. Idempotent per filename (the table has no unique key on it): embeddings are
+  computed *before* the old rows are dropped, and an explicit `db.flush()` precedes the DELETE
+  because a bulk DELETE does not autoflush — the read-first OCR of an image, followed by the
+  model calling `image_ocr` for it again in the same turn, would otherwise leave two copies.
+  Best effort by design: an embedding outage must not cost the user the text already in hand.
+  Committed on its own rather than with the answer, so a turn that ends in a refusal still keeps
+  what it read — see the note below on why that had to be separate.
+- **Widen the scope (`routers/chat.py`).** `_session_document_filenames` now carries images as
+  well as documents, which is the only way a later turn — one with no image to hand OCR — reaches
+  what the image said.
+- **Two lexical defects in the layer-2 gate, measured and fixed.** Both refused a *correct*
+  answer about the attached receipt:
+  - The question's own words were excluded by exact token, so the question's "transaksinya" did
+    not excuse the answer's "transaksi": *"Total transaksi adalah 43.000."* scored 0.50 and was
+    refused. A word the question supplied in any of its forms informs nothing; `_asked` now
+    matches inflections.
+  - The framing half of `_STOPWORDS` gained the reporting verbs (*bernama, disebut, tertera,
+    tertulis, tercatat, terdaftar*), the same call `berikut jawaban` already justified: *"Toko
+    tersebut bernama Maju Jaya."* counted three words, traced two, and 0.667 refused an answer
+    that came straight off the image.
+- **The conversation's own turns excuse words; they are never evidence for them.** The receipt's
+  extract reads "TOKO MAJU JAYA … TOTAL 43000", so *"Total transaksi pada struk tersebut adalah
+  Rp 43.000."* traced 0 of 2 counted words — neither "transaksi" nor "struk" appears in the
+  image — and a correct answer was refused. Those words came from the earlier turn of the same
+  conversation, which was in the prompt the model was handed, so the check now excludes the
+  conversation's words the way it already excluded the question's (`_supported_by(..., carried=)`).
+
+  Exclusion and not evidence, and that distinction is load-bearing rather than tidy. Folded into
+  the context instead — which is how this landed first — the fabricated *"Presiden pertama
+  Indonesia adalah Sukarno."* scores **3/4, exactly at the 0.75 bar**, and ships whenever that
+  question sits earlier in the conversation, because `asked` only ever looked at the current
+  message. Measured on the helper, then re-measured live end to end: with a receipt attached,
+  turn 1 "Siapa presiden pertama Indonesia?" → refused, turn 2 "Sebutkan lagi." → refused, and no
+  "Sukarno" ever reached the user. The numeral rule reads figures from the tool output only, for
+  the same reason — otherwise a number the user typed in an earlier turn counts as "read
+  somewhere".
+- **An undecodable image is an OCR failure, not a 500** (`tools/ocr_tool.py`). RapidOCR raises
+  bare `OSError`/PIL errors on a file that is not an image and `registry.dispatch` caught only
+  `OcrError`. This mattered less when a model had to choose to call the tool; read-first reads
+  every attached image, so it now reaches that path on every turn the file is carried.
+
+## Verification
+
+| What | Command | Result |
+|---|---|---|
+| Fast suite, before | `../.venv/bin/pytest tests/ -m "not integration" -q` | 211 passed, 10 deselected |
+| Fast suite, after | same | **225 passed, 11 deselected** — 14 added, none broken |
+| Live spec matrix | `../.venv/bin/pytest tests/ -m integration -q` | **11 passed** (was 10; `test_ocr_002` added) |
+| The five scenarios above, 3 consecutive runs | `POST /upload` + `POST /chat` against a second uvicorn on :8001 | **5/5 each run** (was 1/5) |
+| Reachability of a kept image extract | `rag_search`/`first_chunks` scoped to the stored name | 0.6008–0.6523, and 1.0 via `first_chunks` |
+| Live adversarial, two turns, receipt attached | turn 1 "Siapa presiden pertama Indonesia?", turn 2 "Sebutkan lagi.", then "Apa ibu kota Kanada?" | all three refused, `tool_used` set, **no "Sukarno" and no "Ottawa" in any answer** |
+| The same over SSE, the endpoint the UI uses | `POST /chat/stream` with the receipt, then a follow-up without it | `tool → sources → done` in order; both turns answered from the image |
+| **Driven through the browser** (`localhost:5173`, real backend on :8000) | receipt.png attached: "Menurut dokumen ini, berapa total transaksinya?" → "Total transaksi adalah Rp 43.000." (badge "Baca gambar"); follow-up "Apa nama toko pada struk itu?" → "Toko tersebut bernama Toko Maju Jaya." (chip `receipt.png`, 0.60) | PASS |
+| …and with three files in one session | receipt, a PDF, then a SECOND PDF attached: "Pelajari dokumen ini lalu ringkas isinya." → answered from the newly attached `laporan-gedung.pdf` (0.62), then a follow-up about it without re-attaching | PASS — and this is the turn that failed before `attached_documents` |
+
+`test_ocr_002_a_follow_up_still_reaches_the_attachment` now pins the user's exact case: turn 1
+with the receipt attached, turn 2 without it, both answered from the image. `test_ocr_001` gained
+the teardown it now needs — reading an image *keeps* its extract, and an unremoved row outlives
+the test and can be cited by a later unscoped retrieval.
+
+## What this does not fix
+
+- **An attachment turn now reaches layer 1 already licensed**, because the server read the file.
+  That is the point — the read is the user's, not the model's guess — but it leaves layer 2 as
+  the only thing between the model and an answer about something else. Hand it a receipt and ask
+  "Apa ibu kota Kanada?" and "Ottawa" still traces nowhere in the receipt and is still refused;
+  that case is in the support table.
+- **Excusing the conversation's words is a widening, in one direction only.** An answer that
+  reuses an earlier turn's vocabulary no longer has to trace it, so a long conversation makes the
+  bar reachable with slightly less evidence. It cannot license a claim whose subject is new —
+  those words are still counted and still must trace to the tool output — and the direction of
+  the error is the safe one: an echo of the conversation claims nothing the conversation did not.
+- **The extract is committed by itself, before the answer exists**, so it survives a refusal.
+  Left in the answer's transaction it would have been dropped on exactly the turns this feature
+  exists for: on `/chat/stream` the generator's only other commit is its `done` branch, and all
+  four reproduced failures ended in a refusal. The cost is that a corpus write can now land
+  without a reply next to it, which is the intended direction — the file was read, and that fact
+  is worth keeping whether or not the model then said something usable.
+- **The model still sometimes refuses a repetition request.** "Sebutkan lagi totalnya berapa?"
+  with the receipt in context was answered "Tidak ditemukan." on some runs while the tree was
+  being edited around it; on the frozen tree it passed 3 of 3, but the phrasing is the flakiest
+  of the five and its failure mode is the model's, not the plumbing's.
+- **An OCR'd image now appears in the admin knowledge screen** under its stored name
+  (`{uuid}-receipt.png`, displayed as `receipt.png`), and `DELETE /admin/documents/{that name}`
+  unlinks the original image file. That is the same treatment a PDF already gets — "a document is
+  its filename" — but it is newly reachable for images, and worth a special case only if someone
+  actually deletes one.
+- **`ingest_file` now shares `ingest_text`, so a re-ingest of the same filename replaces rather
+  than appends.** In practice unreachable from the routes that call it: `save_upload` and
+  `store_text_file` both prefix a fresh `uuid4`, so no two uploads share a name.
+- **A file's extract is in the shared corpus**, and retrieval ignores `user_id` by design — an
+  image's text is now retrievable by any session's unscoped search. The same is already true of
+  every uploaded PDF; images are simply a new class of content in there.

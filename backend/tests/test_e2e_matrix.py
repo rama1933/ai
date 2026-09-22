@@ -104,6 +104,14 @@ def ingested_policy(client, auth) -> str:
     session.close()
 
 
+def _drop_extract(stored_name: str) -> None:
+    """Remove the corpus rows an attachment's read left behind."""
+    session = SessionLocal()
+    session.query(Document).filter_by(filename=stored_name).delete(synchronize_session=False)
+    session.commit()
+    session.close()
+
+
 def _ask(client, auth, message: str, attachment: str | None = None) -> dict:
     response = client.post(
         "/chat",
@@ -131,9 +139,51 @@ def test_ocr_001_image_question_uses_ocr(client, auth):
     assert upload.status_code == 200
     stored = upload.json()["filename"]
 
-    body = _ask(client, auth, "Berapa total transaksi pada struk ini?", attachment=stored)
-    assert body["tool_used"] == "image_ocr"
-    assert "43000" in body["answer"].replace(".", "").replace(",", "")
+    try:
+        body = _ask(client, auth, "Berapa total transaksi pada struk ini?", attachment=stored)
+        assert body["tool_used"] == "image_ocr"
+        assert "43000" in body["answer"].replace(".", "").replace(",", "")
+    finally:
+        # Reading the image now KEEPS its extract in the corpus, under this stored name.
+        # Left behind, it outlives the test and later unscoped retrievals can cite a
+        # receipt from an earlier run.
+        _drop_extract(stored)
+
+
+def test_ocr_002_a_follow_up_still_reaches_the_attachment(client, auth):
+    """An image is only readable while it is attached, so what it said has to outlive the
+    turn that carried it. Measured live before the extract was kept: turn 1 answered
+    "Rp 43.000" from the receipt and the next turn ("sebutkan lagi totalnya berapa?")
+    answered "tidak ditemukan", because nothing on it could reach the image.
+    """
+    with (FIXTURES / "receipt.png").open("rb") as handle:
+        upload = client.post("/upload", headers=auth, files={"file": ("receipt.png", handle, "image/png")})
+    assert upload.status_code == 200
+    stored = upload.json()["filename"]
+    session_id = f"e2e-ocr2-{uuid.uuid4().hex[:8]}"
+
+    try:
+        first = client.post(
+            "/chat",
+            headers=auth,
+            json={
+                "session_id": session_id,
+                "message": "Berapa total transaksi pada struk ini?",
+                "attachments": [stored],
+            },
+        )
+        assert first.status_code == 200, first.text
+        assert "43000" in first.json()["answer"].replace(".", "").replace(",", "")
+
+        # No attachment on this one, so the scope is the only way back to the image.
+        second = client.post(
+            "/chat", headers=auth, json={"session_id": session_id, "message": "Apa nama toko pada struk itu?"}
+        )
+        assert second.status_code == 200, second.text
+        answer = second.json()["answer"]
+        assert "maju" in answer.lower(), f"the follow-up did not reach the image: {answer!r}"
+    finally:
+        _drop_extract(stored)
 
 
 def test_sql_001_statistics_question_uses_sql(client, auth, ingested_policy):

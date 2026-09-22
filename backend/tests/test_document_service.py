@@ -59,3 +59,24 @@ def test_ingest_file_stores_one_row_per_chunk(tmp_path: Path, db, monkeypatch):
     rows = db.query(Document).filter_by(filename="unit-policy.txt").order_by(Document.id).all()
     assert stored == len(rows) > 1
     assert rows[0].doc_metadata["chunk_index"] == 0
+
+
+def test_ingest_extract_replaces_the_chunks_of_the_same_name(db, monkeypatch):
+    """`documents` carries no unique key on filename, so a second read of the same image
+    would otherwise stack a second copy of its text in the corpus and every retrieval
+    over it would return the same passage twice."""
+    monkeypatch.setattr(document_service, "embed_texts", lambda texts: [[0.01] * 768 for _ in texts])
+
+    assert document_service.ingest_extract(db, "satu dua tiga", "abc-struk.png") == 1
+    document_service.ingest_extract(db, "empat lima", "abc-struk.png")
+    db.flush()
+
+    rows = db.query(Document).filter_by(filename="abc-struk.png").all()
+    assert [row.content for row in rows] == ["empat lima"]
+
+
+def test_ingest_extract_refuses_text_with_nothing_in_it(db, monkeypatch):
+    monkeypatch.setattr(document_service, "embed_texts", lambda texts: [[0.01] * 768 for _ in texts])
+
+    with pytest.raises(document_service.IngestError):
+        document_service.ingest_extract(db, "   \n\t  ", "abc-struk.png")

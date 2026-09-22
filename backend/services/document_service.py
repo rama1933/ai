@@ -167,6 +167,56 @@ def chunk_text(text: str, size: int = 800, overlap: int = 120) -> list[str]:
     return chunks
 
 
+def ingest_extract(
+    db: Session,
+    text: str,
+    filename: str,
+    user_id: int | None = None,
+    source: str | None = None,
+) -> int:
+    """Chunk, embed and store text that was never a file: an image's OCR extract.
+
+    Named for that caller and not `ingest_text`, which routers/documents.py already
+    uses for the POST /documents/text handler -- a same-named import there would be
+    shadowed by the route, and the shadow would be silent.
+
+    Stored under whatever name the caller gives -- for an attachment, its stored
+    name. The file and its text then share one handle, which is what lets the
+    session scope in routers/chat.py find the extract on a LATER turn without
+    knowing anything about images.
+
+    Idempotent per filename, and it has to be: `documents` carries no unique key on
+    it, so a second read of the same image would stack a second copy of its text in
+    the corpus and every retrieval over it would return the same passage twice. The
+    embeddings are computed BEFORE the old rows are dropped, so a failed embed leaves
+    the previous extract in place instead of deleting it.
+    """
+    text = clean_text(text)
+    if not text:
+        raise IngestError(f"{filename} produced no extractable text")
+
+    chunks = chunk_text(text)
+    vectors = embed_texts(chunks)
+
+    # The flush is load-bearing, not tidiness: a bulk DELETE does not autoflush, so rows
+    # staged earlier in the SAME transaction -- the read-first OCR of this very image,
+    # when the model then calls image_ocr for it again -- would be invisible to the
+    # DELETE and survive it as a second copy of the same text.
+    db.flush()
+    db.query(Document).filter(Document.filename == filename).delete(synchronize_session=False)
+    for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        db.add(
+            Document(
+                filename=filename,
+                content=chunk,
+                embedding=vector,
+                user_id=user_id,
+                doc_metadata={"chunk_index": index, "chunk_count": len(chunks), "source": source or filename},
+            )
+        )
+    return len(chunks)
+
+
 def ingest_file(db: Session, path: Path, user_id: int | None = None) -> int:
     """Load, clean, chunk, embed, and store a file. Returns the chunk count.
 
@@ -174,21 +224,4 @@ def ingest_file(db: Session, path: Path, user_id: int | None = None) -> int:
     ignores it; it exists so per-user filtering is a one-line change later rather
     than another migration.
     """
-    text = clean_text(load_text(path))
-    if not text:
-        raise IngestError(f"{path.name} produced no extractable text")
-
-    chunks = chunk_text(text)
-    vectors = embed_texts(chunks)
-
-    for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
-        db.add(
-            Document(
-                filename=path.name,
-                content=chunk,
-                embedding=vector,
-                user_id=user_id,
-                doc_metadata={"chunk_index": index, "chunk_count": len(chunks), "source": str(path)},
-            )
-        )
-    return len(chunks)
+    return ingest_extract(db, load_text(path), path.name, user_id, source=str(path))

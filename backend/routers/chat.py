@@ -95,17 +95,24 @@ SESSION_DOC_LIMIT = 10
 def _session_document_filenames(
     db: Session, session_id: str, resolved: list[ResolvedAttachment]
 ) -> list[str]:
-    """Document files this conversation references, newest first, capped.
+    """Files this conversation references, newest first, capped.
 
     Server-derived context, the same principle as image_paths for OCR: the
     model never names a file. Retrieval scopes to these so "pelajari dokumen
     ini" anchors to the papers the caller actually brought to this
     conversation instead of to whichever chunk of the shared corpus happens
     to clear the score floor.
+
+    Every attachment is in here, whatever its kind, under its stored name. An image
+    is read once, by OCR, at the turn it is attached; the extract is then kept in the
+    corpus under that same stored name, so without this the one turn that could reach
+    it would be the one that had the file. What the scope holds for an image is its
+    TEXT. No kind filter: upload_service.RULES produces only documents and images, and
+    a name with no rows behind it retrieves nothing anyway.
     """
     names: list[str] = []
     for r in resolved:
-        if r.kind == "document" and r.stored_name not in names:
+        if r.stored_name not in names:
             names.append(r.stored_name)
 
     rows = (
@@ -121,7 +128,7 @@ def _session_document_filenames(
     )
     for (attachments,) in rows:
         for a in attachments or []:
-            if isinstance(a, dict) and a.get("kind") == "document" and a.get("stored_name") not in names:
+            if isinstance(a, dict) and a.get("stored_name") not in names:
                 names.append(a["stored_name"])
     return names[:SESSION_DOC_LIMIT]
 
@@ -183,11 +190,17 @@ def chat(
 ) -> ChatResponse:
     resolved, history, _, session_docs = _prepare_turn(db, payload, user)
     image_paths = [r.path for r in resolved if r.kind == "image"]
+    attached_docs = [r.stored_name for r in resolved if r.kind == "document"]
 
     started = time.monotonic()
     try:
         result = run_agent(
-            db=db, message=payload.message, history=history, image_paths=image_paths, document_filenames=session_docs
+            db=db,
+            message=payload.message,
+            history=history,
+            image_paths=image_paths,
+            document_filenames=session_docs,
+            attached_documents=attached_docs,
         )
     except AgentError as exc:
         raise HTTPException(status_code=503, detail=f"local LLM unavailable: {exc}") from exc
@@ -233,6 +246,7 @@ def chat_stream(
         db, payload, user, truncate_after_id=payload.truncate_after_id
     )
     image_paths = [r.path for r in resolved if r.kind == "image"]
+    attached_docs = [r.stored_name for r in resolved if r.kind == "document"]
     db.commit()  # the pre-stream work is one unit; the generator opens its own session
 
     def event_source() -> Iterator[str]:
@@ -247,6 +261,7 @@ def chat_stream(
                 history=history,
                 image_paths=image_paths,
                 document_filenames=session_docs,
+                attached_documents=attached_docs,
             ):
                 if event["type"] == "delta":
                     parts.append(event["text"])

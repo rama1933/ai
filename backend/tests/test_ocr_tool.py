@@ -51,3 +51,24 @@ def test_image_ocr_rejects_path_outside_upload_dir(tmp_path):
     outside.write_bytes(b"\x89PNG\r\n\x1a\n")
     with pytest.raises(ocr_tool.OcrError, match="outside"):
         ocr_tool.image_ocr(str(outside))
+
+
+def test_image_ocr_turns_a_decoder_failure_into_an_ocr_error(monkeypatch, tmp_path):
+    """RapidOCR raises bare OSError/PIL errors on a file that is not an image, and the
+    registry catches only OcrError. That mattered less when a model had to CHOOSE to call
+    this tool; the orchestrator now reads every attached image before the model is asked,
+    so an undecodable attachment reaches here on every turn it is carried and would
+    otherwise take the whole turn down with it.
+    """
+    image = tmp_path / "truncated.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    monkeypatch.setattr(ocr_tool.get_settings(), "upload_dir", tmp_path, raising=False)
+
+    class BrokenEngine:
+        def __call__(self, path):
+            raise OSError("Truncated File Read")
+
+    monkeypatch.setattr(ocr_tool, "_engine", lambda: BrokenEngine())
+
+    with pytest.raises(ocr_tool.OcrError, match="truncated.png"):
+        ocr_tool.image_ocr(str(image))

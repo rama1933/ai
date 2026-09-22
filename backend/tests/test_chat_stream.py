@@ -48,7 +48,7 @@ def _patch_stream(monkeypatch, events: list[dict]) -> None:
     """Replace the agent generator with one that emits the given events."""
     from routers import chat as chat_router
 
-    def fake(db, message, history, image_paths, document_filenames=None):
+    def fake(db, message, history, image_paths, document_filenames=None, attached_documents=None):
         yield from events
 
     monkeypatch.setattr(chat_router, "stream_agent", fake)
@@ -102,7 +102,7 @@ def test_stream_emits_tool_and_sources_before_the_first_delta(client, auth_heade
 def test_stream_agent_error_emits_error_event_and_no_done(client, auth_headers, session_id, monkeypatch):
     from routers import chat as chat_router
 
-    def failing(db, message, history, image_paths, document_filenames=None):
+    def failing(db, message, history, image_paths, document_filenames=None, attached_documents=None):
         yield {"type": "delta", "text": "sebagian"}
         raise AgentError("cannot reach Ollama: connection refused")
 
@@ -182,7 +182,7 @@ def test_stream_answers_404_for_another_users_session(client, auth_headers, monk
     monkeypatch.setattr(
         chat_router,
         "run_agent",
-        lambda db, message, history, image_paths, document_filenames=None: AgentResult(answer="ok", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths, document_filenames=None, attached_documents=None: AgentResult(answer="ok", tool_used=None, sources=[]),
     )
     username_b = f"stream-{uuid.uuid4().hex[:8]}"
     client.post("/auth/register", json={"username": username_b, "password": "supersecret1"})

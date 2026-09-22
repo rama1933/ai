@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from sqlalchemy.orm import Session
@@ -113,6 +114,11 @@ def _figures(text: str) -> set[str]:
 # measured, "Berikut jawabannya: masa retensi dokumen keuangan adalah 5 (lima) tahun
 # sejak tanggal penerbitan." scores 0.71 without these words and 1.00 with them, so
 # leaving them in would refuse a correct answer for how it was introduced.
+#
+# The reporting verbs are the same decision, measured on an attached receipt: "Toko
+# tersebut bernama Maju Jaya." counts bernama/maju/jaya, traces two, and 0.667 refuses
+# an answer that came straight off the image. A word that only introduces another word
+# is framing whether or not it happened to appear in the passage.
 _STOPWORDS = frozenset(
     """ada adalah agar akan antara apa apabila atas atau bagi bahwa bila bukan dan dapat
     dari daripada demi dengan di ia itu jadi jika juga karena ke kepada ketika kita lagi
@@ -120,7 +126,7 @@ _STOPWORDS = frozenset(
     sedang serta setiap setelah sesudah supaya tentang terhadap tidak untuk yaitu yakni
     yang saya anda kamu ini tersebut berapa menurut dokumen maaf informasi knowledge base
     berikut jawaban jawabannya berdasarkan silakan memiliki terdapat merupakan sesuai
-    mengenai jumlah
+    mengenai jumlah bernama disebut menyebutkan tertera tertulis tercatat terdaftar
     """.split()
 )
 
@@ -147,11 +153,25 @@ _TALK_FILLER = frozenset(
 SUPPORT_RATIO = 0.75
 
 
-def _supported_by(answer: str, context: str, question: str = "") -> bool:
+def _asked(word: str, asked: set[str]) -> bool:
+    """True when the question already carried `word`, in whatever inflection.
+
+    Indonesian marks its words with affixes rather than standing them alone, so the
+    question's "transaksinya" and the answer's "transaksi" are one word to a reader --
+    but not to a set of exact tokens, which counted the second as something the answer
+    had invented. Measured on an attached receipt: "Menurut dokumen ini, berapa total
+    transaksinya?" -> "Total transaksi adalah 43.000." scored 0.50 and was refused. A
+    word the question supplied in any of its forms informs nothing, which is what the
+    exclusion is for.
+    """
+    return any(word.startswith(other) or other.startswith(word) for other in asked)
+
+
+def _supported_by(answer: str, context: str, question: str = "", carried: str = "") -> bool:
     """Whether the answer's informing vocabulary comes from the passages it was given.
 
-    A cheap stand-in for entailment, and only that. Two refinements make it sharp,
-    both measured on this corpus rather than assumed:
+    A cheap stand-in for entailment, and only that. Three refinements make it sharp,
+    all measured on this corpus rather than assumed:
 
     * Only words the QUESTION did not already supply are counted. A fabricated "Ir.
       Soekarno adalah presiden pertama Indonesia." traces presiden/pertama/indonesia
@@ -159,6 +179,17 @@ def _supported_by(answer: str, context: str, question: str = "") -> bool:
       Indonesia", which scored it 0.50 against a real Perpres chunk -- exactly at the
       bar. Its one informing word, "soekarno", traces nowhere: 0.00.
     * Words that are stopwords or the assistant's own framing are not counted at all.
+    * `carried` -- the conversation so far -- is the same exclusion, extended past this
+      message. An answer reusing an earlier turn's words is not inventing them, and
+      measured, it was the difference between delivering and refusing the correct
+      "Total transaksi pada struk tersebut adalah Rp 43.000." about an attached receipt.
+
+      It is an exclusion source and NOT evidence, which is the whole point of it being
+      a separate argument: folded into `context` instead, it hands the gate a hole.
+      Measured on the real helper, with an unrelated decree as the tool output and
+      "Siapa presiden pertama Indonesia?" earlier in the conversation, the fabricated
+      "Presiden pertama Indonesia adalah Sukarno." scores 3/4 -- exactly at the bar --
+      and ships, because `asked` only ever looked at the current message.
 
     Measured with the real chunks as context: fabricated 0.00 and 0.50, real answers
     1.00. It still has a ceiling -- substituting a number it read ("10 tahun" for 5)
@@ -170,11 +201,11 @@ def _supported_by(answer: str, context: str, question: str = "") -> bool:
     the cost of a second generation per answer.
     """
     context = context.lower()
-    asked = set(_WORD.findall(question.lower()))
+    asked = set(_WORD.findall(question.lower())) | set(_WORD.findall(carried.lower()))
     words = [
         word
         for word in _WORD.findall(answer.lower())
-        if word not in _STOPWORDS and word not in asked
+        if word not in _STOPWORDS and not _asked(word, asked)
     ]
 
     # A numeral carries no vocabulary, so the word halves cannot see one: an answer
@@ -359,12 +390,77 @@ def _accumulate(
     return content, tool_calls, unsent
 
 
+def _without_images(document_filenames: list[str] | None, image_paths: list[str] | None) -> list[str]:
+    """The session's files with the images attached to THIS message taken out.
+
+    The OCR branch writes each image's extract into the corpus under exactly that
+    stored name, so leaving it in the search scope would put the same text into the
+    conversation twice -- once as the read, once as a search hit. Computed once here
+    because the read-first block and the loop below have to agree: one of them
+    searching a scope the other had narrowed is how the duplicate gets back in.
+
+    Empty means unscoped, not "search nothing" -- `dispatch` reads a falsy scope as no
+    scope at all. A session whose only file is the image on this very message therefore
+    searches the shared corpus, exactly as it did before images were in the scope; the
+    extract it just wrote is reachable there too, which is a redundant tool result and
+    not a wrong answer.
+    """
+    images = {Path(path).name for path in image_paths or []}
+    return [name for name in (document_filenames or []) if name not in images]
+
+
+def _read_attachments(
+    db: Session | None,
+    message: str,
+    image_paths: list[str] | None,
+    scope: list[str],
+) -> list[tuple[str, dict, registry.ToolOutcome]]:
+    """Read every file this message carries, before the model gets a say.
+
+    Whether an attachment was consulted used to be left entirely to the model's tool
+    choice, and it routes this badly. Measured live, on llama3.2:3b with the real
+    corpus: with a receipt attached, "Menurut dokumen ini, berapa total transaksinya?"
+    went to sql_query and answered "tidak ditemukan"; with a PDF attached, a follow-up
+    question did the same, while a scoped rag_search held the answer at 0.6368. The
+    file the user handed over is not something to hope gets chosen -- the server reads
+    it, so the turn is grounded in the attachment by construction.
+
+    Images go first, and `scope` has already had the images attached to this message
+    taken out of it (see _without_images).
+
+    Only grounded readings survive -- an image with no readable text, or a scoped
+    search with no hits, must not inject "tidak ditemukan" into the transcript, which
+    would answer the question for the model.
+    """
+    readings: list[tuple[str, dict, registry.ToolOutcome]] = []
+    if image_paths:
+        arguments: dict = {}
+        readings.append(
+            (
+                "image_ocr",
+                arguments,
+                registry.dispatch("image_ocr", arguments, db=db, image_paths=image_paths),
+            )
+        )
+    if scope:
+        arguments = {"query": message}
+        readings.append(
+            (
+                "rag_search",
+                arguments,
+                registry.dispatch("rag_search", arguments, db=db, image_paths=[], document_filenames=scope),
+            )
+        )
+    return [reading for reading in readings if reading[2].grounded]
+
+
 def stream_agent(
     db: Session | None,
     message: str,
     history: list[dict],
     image_paths: list[str] | None = None,
     document_filenames: list[str] | None = None,
+    attached_documents: list[str] | None = None,
 ) -> Iterator[dict]:
     """Ollama native tool-calling loop, as a generator of typed events.
 
@@ -377,6 +473,9 @@ def stream_agent(
       {"type": "delta",   "text": "Berdasar"}       safe answer text
       {"type": "done",    "answer", "tool_used", "sources"}   exactly once, last
 
+    A turn carrying a file opens with one tool/sources pair from _read_attachments,
+    before the loop asks the model anything. Every event after that is unchanged.
+
     Grounding gate, in two layers, because the two leak shapes need different answers:
 
     1. An answer reaches the user only once a tool has supplied something for this turn.
@@ -387,6 +486,12 @@ def stream_agent(
        pertama Indonesia adalah Sukarno" carries both (the second with four chips),
        while a legitimate source-less `sql_query` answer carries neither.
 
+       An attachment turn now reaches this layer already licensed, because the server
+       read the file. That is the point -- the read is the user's, not the model's
+       guess -- and it leaves layer 2 as the only thing between the model and an
+       answer about something else: hand it a receipt, ask "Apa ibu kota Kanada?", and
+       "Ottawa" traces nowhere in the receipt and is still refused.
+
     2. Retrieval cannot report "not found" honestly on this corpus -- measured, an
        unrelated question scores 0.70-0.72 while the chunk that actually holds the
        answer scores 0.63-0.73, so the ranges overlap and no floor separates them. A
@@ -396,17 +501,72 @@ def stream_agent(
        model wrote from its own weights anyway.
     """
     settings = get_settings()
+    small_talk = _is_small_talk(message)
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": message}]
     if image_paths:
         messages[-1]["content"] += "\n\n(User melampirkan sebuah gambar pada pesan ini.)"
 
     tool_used: str | None = None
     sources: list[SourceRef] = []
-    small_talk = _is_small_talk(message)
     grounded = small_talk
     grounding_text: list[str] = []  # everything a tool supplied, to trace against
     nudged = False
     tried_rag = False
+    # The conversation the model was handed. Its words are excluded from the support
+    # check the same way the question's are -- see _supported_by -- and for the same
+    # reason: "Total transaksi pada struk tersebut adalah Rp 43.000." about an attached
+    # receipt counted "transaksi" and "struk" as inventions, because the OCR extract
+    # reads "TOKO MAJU JAYA ... TOTAL 43000" and neither word is in it. They came from
+    # turn 1 of this conversation. Deliberately NOT the trace context: as evidence it
+    # would let the fabricated "Presiden pertama Indonesia adalah Sukarno." score 3/4
+    # and ship whenever that question sits earlier in the conversation.
+    carried = "\n".join(turn["content"] for turn in history)
+
+    def absorb(name: str, outcome: registry.ToolOutcome) -> None:
+        """Fold one tool outcome into the turn's grounding state.
+
+        Shared by the read-first block below and the loop, which have to count the
+        same way: one that credited a reading the other did not would make the gate
+        depend on which side read the file.
+        """
+        nonlocal tool_used, grounded, tried_rag
+        if tool_used is None:  # the first reading, stable for callers and tests
+            tool_used = name
+        tried_rag = tried_rag or name == "rag_search"
+        grounded = grounded or outcome.grounded
+        if outcome.grounded:
+            grounding_text.append(outcome.text)
+
+    # The files the model may search: the whole session, minus the images on this very
+    # message (read-first has already read those, and their extract is in the corpus
+    # under the same name).
+    scope = _without_images(document_filenames, image_paths)
+
+    # What read-first reads: the documents THIS message brought, when it brought any.
+    # The session's older files stay searchable for the model -- but they must not crowd
+    # out the file the user just handed over, and with one list they do. Measured live,
+    # through the UI: a session holding a receipt and a freshly attached PDF answered a
+    # question about "dokumen ini" out of the RECEIPT, because that chunk cleared the 0.6
+    # floor and the PDF's did not, and the first_chunks fallback only fires when NOTHING
+    # hits -- so the file the user had just attached was never read at all.
+    read_scope = attached_documents or scope
+
+    # Read-first, and only for a turn that may answer from something. A greeting reads
+    # nothing and must keep its tool_used None, even when a file rides along with it.
+    if not small_talk:
+        for name, arguments, outcome in _read_attachments(db, message, image_paths, read_scope):
+            yield {"type": "tool", "name": name}
+            absorb(name, outcome)
+            sources.extend(outcome.sources)
+            # The same shape the loop below uses for a tool the model chose itself: an
+            # assistant turn that called it, then its result. Anything else is a
+            # transcript the chat template has never seen.
+            messages.append(
+                {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": arguments}}]}
+            )
+            messages.append({"role": "tool", "content": outcome.text})
+            if outcome.sources:
+                yield {"type": "sources", "sources": outcome.sources}
 
     for _ in range(settings.agent_max_iterations):
         # Deltas are released on the small-talk lane only. Every other turn has to be
@@ -446,7 +606,9 @@ def stream_agent(
                         continue
                     yield _refusal(tool_used)
                     return
-                if not small_talk and not _supported_by(content, "\n".join(grounding_text), question=message):
+                if not small_talk and not _supported_by(
+                    content, "\n".join(grounding_text), question=message, carried=carried
+                ):
                     # A tool supplied something, but the model's answer may not use it.
                     # Measured: "Siapa presiden pertama Indonesia?" retrieves four chunks
                     # of an unrelated decree and answers "Ir. Soekarno adalah presiden
@@ -489,20 +651,13 @@ def stream_agent(
                 arguments,
                 db=db,
                 image_paths=image_paths or [],
-                document_filenames=document_filenames,
+                document_filenames=scope or None,
             )
-            if tool_used is None:  # the agent's first choice, stable for callers and tests
-                tool_used = name
-            tried_rag = tried_rag or name == "rag_search"
-            sources.extend(outcome.sources)
             # The turn is licensed from here on: a tool read something, so the model
             # can be believed when it writes about it -- subject to the support check
             # above when retrieval is what it read.
-            grounded = grounded or outcome.grounded
-            if outcome.grounded:
-                grounding_text.append(outcome.text)
-            if name == "rag_search" and outcome.grounded:
-                retrieved = True
+            absorb(name, outcome)
+            sources.extend(outcome.sources)
             messages.append({"role": "tool", "content": outcome.text})
             if outcome.sources:
                 yield {"type": "sources", "sources": outcome.sources}
@@ -516,6 +671,7 @@ def run_agent(
     history: list[dict],
     image_paths: list[str] | None = None,
     document_filenames: list[str] | None = None,
+    attached_documents: list[str] | None = None,
 ) -> AgentResult:
     """Blocking form of stream_agent: drain the events, return the done payload."""
     for event in stream_agent(
@@ -523,6 +679,7 @@ def run_agent(
         message=message,
         history=history,
         image_paths=image_paths,
+        attached_documents=attached_documents,
         document_filenames=document_filenames,
     ):
         if event["type"] == "done":

@@ -118,3 +118,61 @@ def test_dispatch_rag_search_without_session_documents_stays_global(monkeypatch)
     assert seen["top_k"] == 4
     assert seen["filenames"] is None
     assert "retensi 5 tahun" in outcome.text
+
+
+def test_image_ocr_keeps_the_extract_as_the_corpus_for_that_image(monkeypatch):
+    """An image is readable only while it is attached -- the orchestrator hands OCR the
+    paths of THIS message -- so the text has to outlive the turn.
+
+    Measured live without this: turn 1 answered "Rp 43.000" from the receipt, and the
+    next turn ("sebutkan lagi totalnya berapa?"), which carried no image, refused.
+
+    Stored under the STORED name rather than the display name: the session's scope is
+    rebuilt from chat_history.attachments[].stored_name, and two uploads of the same
+    picture share a display name but never a stored one.
+    """
+    kept = []
+
+    class FakeSession:
+        """Only commit is reached: the extract has to survive a turn with no answer,
+        so _keep_extract commits it on its own rather than with the answer."""
+
+        def __init__(self):
+            self.commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+    session = FakeSession()
+    monkeypatch.setattr(registry, "image_ocr", lambda path: "TOKO MAJU JAYA TOTAL 43000")
+    monkeypatch.setattr(
+        registry,
+        "ingest_extract",
+        lambda db, text, filename, user_id=None, source=None: kept.append((text, filename, source)) or 1,
+    )
+
+    outcome = registry.dispatch("image_ocr", {}, db=session, image_paths=["/uploads/abc-struk.png"])
+
+    assert kept == [("TOKO MAJU JAYA TOTAL 43000", "abc-struk.png", "/uploads/abc-struk.png")]
+    assert session.commits == 1
+    assert outcome.grounded is True
+    assert [s.filename for s in outcome.sources] == ["abc-struk.png"]
+
+
+def test_a_failed_extract_save_does_not_cost_the_answer(monkeypatch):
+    """What the user asked for is the answer. A local embedding outage must not turn a
+    readable image into a refusal, so the save is best effort and the OCR text in hand
+    still grounds the turn."""
+    from services.embedding_service import EmbeddingError
+
+    monkeypatch.setattr(registry, "image_ocr", lambda path: "TOTAL 43000")
+
+    def refused(*args, **kwargs):
+        raise EmbeddingError("cannot reach the embedding model")
+
+    monkeypatch.setattr(registry, "ingest_extract", refused)
+
+    outcome = registry.dispatch("image_ocr", {}, db="a-session", image_paths=["/uploads/abc-struk.png"])
+
+    assert "43000" in outcome.text
+    assert outcome.grounded is True

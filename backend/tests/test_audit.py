@@ -75,7 +75,7 @@ def test_chat_turn_records_the_tool_and_no_message_text(client, fresh_username, 
     monkeypatch.setattr(
         chat_router,
         "run_agent",
-        lambda db, message, history, image_paths, document_filenames=None: AgentResult(
+        lambda db, message, history, image_paths, document_filenames=None, attached_documents=None: AgentResult(
             answer="ok", tool_used="rag_search", sources=[]
         ),
     )

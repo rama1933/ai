@@ -67,7 +67,7 @@ def quiet_agent(monkeypatch):
     monkeypatch.setattr(
         chat_router,
         "run_agent",
-        lambda db, message, history, image_paths, document_filenames=None: AgentResult(answer="ok", tool_used=None, sources=[]),
+        lambda db, message, history, image_paths, document_filenames=None, attached_documents=None: AgentResult(answer="ok", tool_used=None, sources=[]),
     )
 
 
@@ -138,7 +138,7 @@ def test_only_images_reach_the_agent_as_image_paths(client, auth_headers, sessio
 
     captured = {}
 
-    def fake_run_agent(db, message, history, image_paths, document_filenames=None):
+    def fake_run_agent(db, message, history, image_paths, document_filenames=None, attached_documents=None):
         captured["image_paths"] = image_paths
         return AgentResult(answer="ok", tool_used=None, sources=[])
 
@@ -283,7 +283,7 @@ def test_session_documents_thread_to_the_agent_for_retrieval_scoping(
 
     captured = {}
 
-    def fake_run_agent(db, message, history, image_paths, document_filenames=None):
+    def fake_run_agent(db, message, history, image_paths, document_filenames=None, attached_documents=None):
         captured["document_filenames"] = document_filenames
         return AgentResult(answer="ok", tool_used=None, sources=[])
 
@@ -326,3 +326,33 @@ def test_session_documents_thread_to_the_agent_for_retrieval_scoping(
     session.close()
     (UPLOAD_DIR / first["stored_name"]).unlink(missing_ok=True)
     (UPLOAD_DIR / second["stored_name"]).unlink(missing_ok=True)
+
+
+def test_an_images_stored_name_scopes_later_retrieval(client, auth_headers, session_id, monkeypatch):
+    """An image is read once, at the turn that carries it, and the extract is kept in the
+    corpus under that image's stored name. A later turn has no image to hand OCR, so the
+    scope is the only way back to what it said -- measured live, that follow-up refused
+    before this.
+    """
+    from routers import chat as chat_router
+
+    captured = {}
+
+    def fake_run_agent(db, message, history, image_paths, document_filenames=None, attached_documents=None):
+        captured["document_filenames"] = document_filenames
+        return AgentResult(answer="ok", tool_used=None, sources=[])
+
+    monkeypatch.setattr(chat_router, "run_agent", fake_run_agent)
+
+    png = _upload(client, auth_headers, "struk.png", PNG, "image/png")
+    _store_on_disk(png, PNG)
+
+    client.post(
+        "/chat",
+        headers=auth_headers,
+        json={"session_id": session_id, "message": "lihat struk ini", "attachments": [png["stored_name"]]},
+    )
+    client.post("/chat", headers=auth_headers, json={"session_id": session_id, "message": "sebutkan lagi"})
+
+    assert captured["document_filenames"] == [png["stored_name"]]
+    (UPLOAD_DIR / png["stored_name"]).unlink(missing_ok=True)

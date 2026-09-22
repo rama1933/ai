@@ -548,6 +548,7 @@ def test_a_supported_answer_is_told_apart_from_an_echo_of_the_question():
         "[Kabupaten_Tabalong.txt] Kabupaten Tabalong memiliki luas 3.767 km2 dan berpenduduk "
         "218.954 jiwa menurut sensus 2010."
     )
+    receipt = "[receipt.png] TOKO MAJU JAYA Kopi Susu 25000 Roti Bakar 18000 TOTAL 43000"
 
     # (answer, context, question, expected)
     table = [
@@ -600,6 +601,22 @@ def test_a_supported_answer_is_told_apart_from_an_echo_of_the_question():
             "gambaran kabupaten tabalong",
             True,
         ),
+        # MEASURED LIVE on an attached receipt (TOKO MAJU JAYA / TOTAL 43000). Both of
+        # these are what the model actually wrote about the image it had just been
+        # handed, and both were refused: the first counted "transaksi" as news the answer
+        # had invented, though the question had supplied it as "transaksinya"; the second
+        # counted a reporting verb that introduces the name rather than being one.
+        (
+            "Total transaksi adalah 43.000.",
+            receipt,
+            "Menurut dokumen ini, berapa total transaksinya?",
+            True,
+        ),
+        ("Toko tersebut bernama Maju Jaya.", receipt, "Apa nama toko pada struk itu?", True),
+        ("Toko yang tertera pada struk itu adalah Toko Maju Jaya.", receipt, "Apa nama toko pada struk itu?", True),
+        # A reporting verb does not launder a fabrication: the name itself still has to
+        # be in the passage, and it is not.
+        ("Toko tersebut bernama Toko Sumber Rejeki.", receipt, "Apa nama toko pada struk itu?", False),
     ]
 
     for answer, context, question, expected in table:
@@ -770,3 +787,274 @@ def test_a_short_answer_with_nothing_to_trace_is_not_refused(monkeypatch):
 )
 def test_a_knowledge_question_is_never_small_talk(message):
     assert orchestrator._is_small_talk(message) is False
+
+
+def test_an_attached_image_is_read_before_the_model_is_asked(monkeypatch):
+    """The file the caller handed over is not something to leave to the model's choice.
+
+    Measured live: with a receipt attached, "Menurut dokumen ini, berapa total
+    transaksinya?" went to sql_query, read nothing, and was answered "tidak ditemukan"
+    while the image sat there unread. The server reads it now, and the turn opens with
+    the same tool/sources pair the loop emits for a tool the model chose itself.
+    """
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        seen.append((name, tuple(image_paths or ())))
+        return registry.ToolOutcome(
+            text="TOKO MAJU JAYA TOTAL 43000", sources=[SourceRef(filename="receipt.png")]
+        )
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Totalnya 43.000."}]])
+
+    events = list(
+        orchestrator.stream_agent(
+            db=None, message="Berapa total transaksi pada struk ini?", history=[], image_paths=["/u/abc-receipt.png"]
+        )
+    )
+
+    assert seen == [("image_ocr", ("/u/abc-receipt.png",))]
+    assert [e["type"] for e in events] == ["tool", "sources", "done"]
+    assert events[-1]["tool_used"] == "image_ocr"
+    assert events[-1]["answer"] == "Totalnya 43.000."
+
+
+def test_an_unreadable_attachment_does_not_license_the_answer(monkeypatch):
+    """An image with no readable text reads nothing, so the turn is still ungrounded --
+    the read counts only when it produced something."""
+    monkeypatch.setattr(
+        registry, "dispatch", lambda *a, **k: registry.ToolOutcome(text="no readable text", grounded=False)
+    )
+    _mock_ollama(
+        monkeypatch,
+        [_reply(content="Ibu kota Kanada adalah Ottawa."), _reply(content="Ibu kota Kanada adalah Ottawa.")],
+    )
+
+    events = list(
+        orchestrator.stream_agent(db=None, message="Apa ibu kota Kanada?", history=[], image_paths=["/u/abc.png"])
+    )
+
+    assert [e["type"] for e in events] == ["done"]
+    assert "Ottawa" not in events[-1]["answer"]
+
+
+def test_an_attached_document_is_searched_before_the_model_is_asked(monkeypatch):
+    """Same read-first rule for a PDF: measured live, a follow-up question about an
+    attached report went to sql_query and was refused while a scoped rag_search held the
+    answer at 0.6368."""
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        seen.append((name, arguments.get("query"), tuple(document_filenames or ())))
+        return registry.ToolOutcome(
+            text="[abc-laporan.pdf] Total anggaran Rp 987.654.321.",
+            sources=[SourceRef(filename="abc-laporan.pdf", score=0.9)],
+        )
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Total anggarannya Rp 987.654.321."}]])
+
+    events = list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Berapa total anggarannya?",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+        )
+    )
+
+    assert seen == [("rag_search", "Berapa total anggarannya?", ("abc-laporan.pdf",))]
+    assert events[-1]["tool_used"] == "rag_search"
+    assert events[-1]["answer"] == "Total anggarannya Rp 987.654.321."
+
+
+def test_an_image_is_not_searched_again_as_a_document(monkeypatch):
+    """The OCR branch has just written the extract into the corpus under the image's own
+    stored name, so searching for it would put the same text in the transcript twice.
+
+    Both searches are asserted, and that is the point: the read-first block and the loop
+    narrowing the scope differently is exactly how the duplicate gets back in, because
+    the model's own rag_search would reach around the read-first block's narrowing.
+    """
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        seen.append((name, tuple(document_filenames or ())))
+        return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="receipt.png")])
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(
+        monkeypatch,
+        [
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "rag_search", "arguments": {"query": "lagi"}}}],
+                }
+            ],
+            [{"role": "assistant", "content": "Baik."}],
+        ],
+    )
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Berapa totalnya?",
+            history=[],
+            image_paths=["/u/abc-receipt.png"],
+            document_filenames=["abc-receipt.png", "xyz-laporan.pdf"],
+        )
+    )
+
+    assert seen == [
+        ("image_ocr", ()),
+        ("rag_search", ("xyz-laporan.pdf",)),  # read-first
+        ("rag_search", ("xyz-laporan.pdf",)),  # the model's own, same scope
+    ]
+
+
+def test_a_greeting_with_an_attachment_reads_nothing(monkeypatch):
+    """The spec matrix's "a greeting answers with tool_used None" has to survive a file
+    riding along with the greeting."""
+    monkeypatch.setattr(
+        registry, "dispatch", lambda *a, **k: pytest.fail("a greeting must not read the attachment")
+    )
+    _mock_ollama(monkeypatch, [_reply(content="Halo, ada yang bisa saya bantu?")])
+
+    result = orchestrator.run_agent(db=None, message="halo", history=[], image_paths=["/u/abc.png"])
+
+    assert result.tool_used is None
+    assert result.answer == "Halo, ada yang bisa saya bantu?"
+
+
+def _receipt_turn(monkeypatch, history):
+    monkeypatch.setattr(
+        registry,
+        "dispatch",
+        lambda *a, **k: registry.ToolOutcome(
+            text="TOKO MAJU JAYA TOTAL 43000", sources=[SourceRef(filename="receipt.png")]
+        ),
+    )
+    _mock_ollama_chunks(
+        monkeypatch, [[{"role": "assistant", "content": "Total transaksi pada struk tersebut adalah Rp 43.000."}]]
+    )
+    return list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Sebutkan lagi totalnya berapa?",
+            history=history,
+            document_filenames=["abc-receipt.png"],
+        )
+    )
+
+
+def test_a_word_from_an_earlier_turn_is_not_an_invention(monkeypatch):
+    """The history is in the prompt the model was handed, so an answer reusing a word from
+    an earlier turn of THIS conversation is not something it made up.
+
+    Measured on an attached receipt: the extract reads "TOKO MAJU JAYA ... TOTAL 43000",
+    so "transaksi" and "struk" appear in it nowhere, and the correct answer above was
+    refused with them counted as invented. Turn 1's near-identical wording only passed
+    because its question happened to supply "transaksi" -- an answer must not depend on
+    that coincidence.
+    """
+    history = [
+        {"role": "user", "content": "Berapa total transaksi pada struk ini?"},
+        {"role": "assistant", "content": "Total transaksi pada struk ini adalah Rp 43.000."},
+    ]
+
+    assert _receipt_turn(monkeypatch, history)[-1]["answer"].startswith("Total transaksi pada struk tersebut")
+
+
+def test_without_that_history_the_same_answer_is_still_refused(monkeypatch):
+    """The other side of the same rule, so the evidence cannot be widened into a licence:
+    with nothing earlier in the conversation to have supplied them, those two words come
+    from nowhere and the answer goes."""
+    events = _receipt_turn(monkeypatch, [])
+
+    assert events[-1]["answer"] == orchestrator.NOT_IN_KNOWLEDGE_ANSWER
+
+
+def test_the_conversation_is_never_the_evidence(monkeypatch):
+    """`carried` excuses a word the answer reuses; it must never count AS evidence.
+
+    Measured on the real helper: with an unrelated decree as the tool output and
+    "Siapa presiden pertama Indonesia?" earlier in the conversation, folding the
+    history into the context instead scored this fabrication 3/4 -- exactly at the
+    0.75 bar -- and shipped it, because `asked` only ever looked at the current
+    message.
+    """
+    decree = "[2026kb6306267.pdf] Peraturan Pemerintah Nomor 24 Tahun 1997 tentang Pendaftaran Tanah."
+    carried = "Siapa presiden pertama Indonesia?\nMaaf, informasi tersebut tidak ditemukan di knowledge base."
+
+    refused = orchestrator._supported_by(
+        "Presiden pertama Indonesia adalah Sukarno.", decree, question="Sebutkan lagi.", carried=carried
+    )
+    assert refused is False
+
+    # The exemption itself still works: an answer about the attached receipt passes,
+    # because the words it reuses came from the earlier turn rather than from the image.
+    excused = orchestrator._supported_by(
+        "Total transaksi pada struk tersebut adalah Rp 43.000.",
+        "[receipt.png] TOKO MAJU JAYA TOTAL 43000",
+        question="Sebutkan lagi totalnya berapa?",
+        carried="Berapa total transaksi pada struk ini?",
+    )
+    assert excused is True
+
+
+def test_read_first_reads_what_this_message_attached_not_the_whole_session(monkeypatch):
+    """A session's older files are searchable by the model, but they must not crowd out
+    the file the user just handed over.
+
+    Measured live through the UI, before this: a session holding a receipt and a freshly
+    attached PDF answered "Pelajari dokumen ini lalu ringkas isinya." out of the RECEIPT
+    -- that chunk cleared the 0.6 floor and the PDF's did not, and the first_chunks
+    fallback only fires when NOTHING hits. The newly attached file was never read.
+    """
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        seen.append(tuple(document_filenames or ()))
+        return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="laporan.pdf")])
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Baik."}]])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Pelajari dokumen ini.",
+            history=[],
+            document_filenames=["abc-laporan.pdf", "xyz-struk.png"],
+            attached_documents=["abc-laporan.pdf"],
+        )
+    )
+
+    assert seen == [("abc-laporan.pdf",)]
+
+
+def test_read_first_falls_back_to_the_session_scope_when_nothing_is_attached(monkeypatch):
+    """A follow-up carries no attachment of its own, and that is exactly the turn the
+    session scope exists for."""
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+        seen.append(tuple(document_filenames or ()))
+        return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="abc-laporan.pdf")])
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Baik."}]])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Siapa penanggung jawabnya?",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+        )
+    )
+
+    assert seen == [("abc-laporan.pdf",)]
