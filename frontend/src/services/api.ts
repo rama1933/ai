@@ -71,6 +71,51 @@ export interface UploadResponse {
   size: number
 }
 
+export interface AdminStats {
+  users: number
+  active_users: number
+  documents: number
+  chunks: number
+  sessions: number
+  messages: number
+  storage_bytes: number
+}
+
+/** One ingested file. A document is its stored filename (SP2 Decision 1). */
+export interface KnowledgeItem {
+  filename: string
+  display_name: string
+  chunks: number
+  chars: number
+  owner: string | null
+  created_at: string
+}
+
+export interface ChunkItem {
+  chunk_index: number
+  chars: number
+  content: string
+}
+
+export interface LogItem {
+  id: number
+  username: string | null
+  action: string
+  target: string | null
+  detail: Record<string, unknown>
+  created_at: string
+}
+
+export interface AdminUserItem {
+  id: number
+  username: string
+  role: string
+  is_active: boolean
+  created_at: string
+  sessions: number
+  documents: number
+}
+
 export const TOKEN_KEY = 'agentic-rag-token'
 export const ROLE_KEY = 'agentic-rag-role'
 export const USERNAME_KEY = 'agentic-rag-username'
@@ -287,5 +332,70 @@ export const api = {
         boundary = carry.indexOf('\n\n')
       }
     }
+  },
+
+  /**
+   * The operator console. Every call behind these is guarded by the backend's
+   * require_role("ADMIN"): a 403 here is the boundary, and the UI only hides the
+   * door rather than being the lock on it.
+   */
+  admin: {
+    async stats(): Promise<AdminStats> {
+      const { data } = await http.get('/admin/stats')
+      return data
+    },
+
+    async listDocuments(params: { q?: string; limit?: number; offset?: number } = {}): Promise<KnowledgeItem[]> {
+      const { data } = await http.get('/admin/documents', { params })
+      return data
+    },
+
+    async listChunks(filename: string, params: { limit?: number; offset?: number } = {}): Promise<ChunkItem[]> {
+      const { data } = await http.get(`/admin/documents/${encodeURIComponent(filename)}/chunks`, { params })
+      return data
+    },
+
+    async deleteDocument(filename: string): Promise<void> {
+      await http.delete(`/admin/documents/${encodeURIComponent(filename)}`)
+    },
+
+    async listLogs(
+      params: { action?: string; username?: string; since?: string; until?: string; limit?: number; offset?: number } = {},
+    ): Promise<LogItem[]> {
+      const { data } = await http.get('/admin/logs', { params })
+      return data
+    },
+
+    async logActions(): Promise<string[]> {
+      const { data } = await http.get('/admin/logs/actions')
+      return data
+    },
+
+    async purgeLogs(before: string): Promise<{ deleted: number }> {
+      const { data } = await http.delete('/admin/logs', { params: { before } })
+      return data
+    },
+
+    async listUsers(params: { q?: string; limit?: number; offset?: number } = {}): Promise<AdminUserItem[]> {
+      const { data } = await http.get('/admin/users', { params })
+      return data
+    },
+
+    async createUser(body: { username: string; password: string; role: string }): Promise<AdminUserItem> {
+      const { data } = await http.post('/admin/users', body)
+      return data
+    },
+
+    async updateUser(
+      id: number,
+      body: { role?: string; is_active?: boolean; password?: string },
+    ): Promise<AdminUserItem> {
+      const { data } = await http.patch(`/admin/users/${id}`, body)
+      return data
+    },
+
+    async deleteUser(id: number): Promise<void> {
+      await http.delete(`/admin/users/${id}`)
+    },
   },
 }

@@ -33,6 +33,8 @@ withDefaults(
       | 'message'
       | 'stop'
       | 'copy'
+      | 'database'
+      | 'history'
     size?: number
   }>(),
   { size: 18 },
@@ -167,6 +169,18 @@ withDefaults(
     <template v-else-if="name === 'copy'">
       <rect x="9" y="9" width="13" height="13" rx="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </template>
+
+    <template v-else-if="name === 'database'">
+      <ellipse cx="12" cy="5.5" rx="7.5" ry="2.5" />
+      <path d="M4.5 5.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6" />
+      <path d="M4.5 11.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6" />
+    </template>
+
+    <template v-else-if="name === 'history'">
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3 8.5" />
+      <path d="M3 3.5v5h5" />
+      <path d="M12 8v4.5l3 1.8" />
     </template>
   </svg>
 </template>
