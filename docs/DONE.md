@@ -662,3 +662,40 @@ Recorded so no reviewer hunts for them:
   five test lambdas mirroring that signature were renamed with it.
 - The plan estimated ~40 KB gzipped for highlighting; the measured whole-task delta (highlight.js
   core + six languages, toolbar, token styles) is +23.1 kB gzipped.
+
+---
+
+# Retrieval context fix (2026-09-22, branch `fix/retrieval-context`)
+
+User report: a PDF uploaded, then "pelajari dokumen ini" produced an off-context generic summary.
+Diagnosis: OCR was never involved (PDFs go through text extraction + embedding, which worked --
+45 chunks ingested); the vague query simply ranked a stale `policy.txt` and three table-fragment
+chunks above everything else, and the small model summarised that mix. Fixes, in three commits:
+
+1. `rag_search` gains a score floor (`rag_min_score`, 0.6) and an optional filename scope.
+2. The chat router threads the session's own document attachments (newest first, capped 10)
+   through `run_agent`/`stream_agent` into `dispatch` -- the same server-derived pattern as
+   `image_paths`; the tool schema still exposes only `query`. Scoped reads run top-6.
+3. The system prompt tells the model to say "tidak ditemukan" instead of summarising irrelevant
+   pieces (wording A/B-ed against live Ollama: a longer first draft deterministically broke
+   small-talk routing; the compact one keeps both).
+4. When scoped retrieval returns empty (the model's own query can embed below the floor against
+   the very document in question), `first_chunks()` serves the scoped files' opening chunks --
+   title and subject line -- without score filtering.
+
+Live evidence, real PDF, real Ollama:
+
+```
+message: "pelajari dokumen ini" (PDF attached)
+tool_used : rag_search
+answer    : Berdasarkan dokumen yang ditemukan, Bupati Hulu Sungai Selatan telah menetapkan 95
+            kepala keluarga sebagai subjek redistribusi tanah di Desa Paramaian, Kecamatan Daha
+            Utara, Kabupaten Hulu Sungai Selatan, Provinsi Kalimantan Selatan...
+
+follow-up WITHOUT attachment, same session ("dokumen ini tentang apa saja? sebutkan poin-poin
+utamanya") -> rag_search, answer lists Keputusan Bupati Nomor 100.3.3.2/267/KUM/2026 and its
+three main points -- scoped via session history.
+```
+
+Suites at merge time: backend `134 passed, 10 deselected` (non-integration) plus `9 passed`
+e2e integration; frontend untouched.
