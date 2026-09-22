@@ -699,3 +699,129 @@ three main points -- scoped via session history.
 
 Suites at merge time: backend `134 passed, 10 deselected` (non-integration) plus `9 passed`
 e2e integration; frontend untouched.
+
+---
+
+# SP2 — Admin console (2026-09-22)
+
+Every verdict below was pasted from a command run during this sweep on `master` (from
+`b058e3d`, the plan commit). Nothing is ticked from the plan text. The three screens, the
+role boundary and the two sidebar states are shown as screenshots; the suite output that
+closed each task follows.
+
+## Environment notes for this run
+
+- Ports 8000 and 5173 were held by leftover processes of unknown provenance, so this sweep
+  started its own pair: backend on **:8050** (`CORS_ORIGINS=["http://localhost:5175"]`) and
+  vite on **:5175** (`VITE_API_BASE_URL=http://localhost:8050`). The leftovers were left alone.
+- Two demo accounts were created in the dev database for the screenshots (`sp2-admin`,
+  promoted to ADMIN by the README's one-line SQL, and `sp2-viewer`, a plain USER). **Both were
+  deleted after the screenshots were taken**, so the dev database is not left holding an ADMIN
+  account with a known password. Their `activity_log` rows survive with `user_id` NULL and the
+  username snapshot intact — the ON DELETE SET NULL behaviour Task 1's test asserts, observed
+  in the wild.
+
+## The role boundary, live
+
+```
+$ curl -s -o /dev/null -w "%{http_code}\n" localhost:8050/admin/stats -H "Authorization: Bearer $VIEWER_TOKEN"
+403
+$ curl -s -o /dev/null -w "%{http_code}\n" localhost:8050/admin/stats
+401
+$ curl -s -o /dev/null -w "%{http_code}\n" localhost:8050/admin/stats -H "Authorization: Bearer $ADMIN_TOKEN"
+200
+$ curl -s localhost:8050/admin/stats -H "Authorization: Bearer $ADMIN_TOKEN"
+{"users":5,"active_users":5,"documents":9,"chunks":617,"sessions":14,"messages":47,"storage_bytes":4790269}
+```
+
+The courtesy layer, from the browser console while signed in as `sp2-viewer`:
+
+```
+> location.hash = '#/admin/users'
+{ hash: "#/chat", heading: "Agentic RAG Assistant", hasAdminMenu: false }
+```
+
+A USER who types an admin hash lands back on the chat; the 403 above is the actual boundary.
+
+## Screenshots
+
+| File | Shows |
+|---|---|
+| `sp2-knowledge-light.png` / `sp2-knowledge-dark.png` | the knowledge base: real corpus, 617 chunks across 9 files, owner and upload time per row |
+| `sp2-logs-light.png` / `sp2-logs-dark.png` | the activity log with a `CHAT_TURN` row's detail as key/value chips (`tool_used sql_query`, `duration_ms 6590`) |
+| `sp2-users-light.png` / `sp2-users-dark.png` | user management, with the signed-in admin's own row's destructive controls disabled |
+| `sp2-sidebar-admin.png` | the Admin group (Data Training · Log Aktivitas · Pengguna) in the conversation sidebar, signed in as an ADMIN |
+| `sp2-sidebar-user.png` | the same sidebar signed in as a USER — no Admin group, no greyed-out teaser |
+
+All at 1440×900.
+
+## Full suites
+
+```
+$ cd backend && ../.venv/bin/pytest tests/ -v
+179 passed, 1 warning in 113.14s          # includes the 10 live-model integration tests
+
+$ cd backend && ../.venv/bin/pytest tests/ -m "not integration" -v
+169 passed, 10 deselected, 1 warning in 47.64s
+
+$ cd frontend && npm run test
+Test Files  11 passed (11)
+      Tests  62 passed (62)
+
+$ cd frontend && npm run build
+dist/assets/index-Dgt76T8G.css   30.44 kB │ gzip:   6.34 kB
+dist/assets/index-COKZijAT.js   505.00 kB │ gzip: 178.72 kB
+✓ built in 753ms
+```
+
+## SP2 rows, one per task
+
+| Feature | Verified by | Result |
+|---|---|---|
+| Task 1 — `activity_log`, `users.is_active`, migration 004 | `../.venv/bin/pytest tests/test_activity_log.py -q` | **PASS** — `3 passed` (row round-trips; the username snapshot survives the user's deletion; `rag_readonly` gets `permission denied`). Migration applied to both databases and re-run to confirm it is a no-op the second time |
+| Task 2 — audit helper and its call sites | `../.venv/bin/pytest tests/test_audit.py -q` | **PASS** — `4 passed` (one `AUTH_LOGIN` row per successful login, never message text; a failed login records the attempted username with a null actor; a chat turn carries `tool_used`, `chars_in`, `chars_out`) |
+| Task 3 — `is_active` enforced per request | `../.venv/bin/pytest tests/test_auth.py -q` | **PASS** — `6 passed` (a deactivated account's existing token 401s on `/auth/me` and `/sessions`, and its login fails — the path that does not go through `get_current_user`) |
+| Task 4 — admin stats and knowledge base | `../.venv/bin/pytest tests/test_admin_documents.py -q` | **PASS** — `9 passed` (403 for a USER on every route, one row per ingested file with the chunker's own count, delete removes chunks + file + writes `DOC_DELETE`, three traversal spellings delete nothing and 404) |
+| Task 5 — activity log API | `../.venv/bin/pytest tests/test_admin_logs.py -q` | **PASS** — `8 passed` (action and username filters narrow, the username filter also reaches a failed login's detail snapshot, purge deletes only rows older than `before` and leaves its own audit row, `before` is required → 422) |
+| Task 6 — user management | `../.venv/bin/pytest tests/test_admin_users.py -q` | **PASS** — `10 passed` (create→login works, 409 on a duplicate, deactivation kills a live token end-to-end, a password change is audited as `{"fields": ["password"]}` and never its value, 404 on an unknown id, and the last active admin keeps their rights through all three paths) |
+| Task 7 — hash view switch and admin shell | `npx vitest run src/composables/__tests__/useView.spec.ts` | **PASS** — `Tests 5 passed` (hash seeds the view, unknown hash falls back, `go()` writes the hash, back-button `hashchange` follows, `isAdminView`) |
+| Task 7b — the admin menu in the sidebar | `npx vitest run src/components/__tests__/SessionSidebarBody.spec.ts` | **PASS** — `Tests 4 passed` (three items for an ADMIN, none at all for a USER, clicking sets `admin/knowledge` and emits `openView`, exactly one item carries `aria-current="page"`) |
+| Task 8 — knowledge screen | `npx vitest run src/components/__tests__/KnowledgeView.spec.ts` | **PASS** — `Tests 6 passed` (rows from the API, empty state, chunk expansion, delete only after the dialog is accepted, cancel deletes nothing, a failed delete surfaces instead of silently refreshing) |
+| Task 9 — logs screen | `npx vitest run src/components/__tests__/LogsView.spec.ts` | **PASS** — `Tests 5 passed` (rows with detail as key/value, action options come from the API, a filter change refetches from offset 0, the date range is sent as whole days with the end included, the purge confirm is inert until a date is set) |
+| Task 10 — users screen | `npx vitest run src/components/__tests__/UsersView.spec.ts` | **PASS** — `Tests 6 passed` (rows, the self-row's destructive controls disabled while another row's stay live, create calls the API and shows the row, 409 reads as a sentence, the activation toggle hits the API, delete behind the dialog) |
+| Task 11 — docs and this sweep | the rows above | **PASS** |
+
+## Deviations and additions the plan's text did not spell out
+
+Recorded so no reviewer hunts for them:
+
+- **The failed-login audit row needs an explicit commit.** The helper rides the request's unit
+  of work, but `POST /auth/login` answers 401 by raising, and `get_db` rolls back on any
+  exception — so the row was silently discarded until the router committed it before raising.
+  Caught by `test_audit.py` (the first run of those tests failed exactly here). It is the only
+  audit call in the codebase that commits.
+- **The sidebar's admin items emit `openView`, not `navigate`.** The plan said `navigate`, but
+  both shells already treat that one as "a conversation became active" and send the view back to
+  chat — so an item emitting it would bounce straight off the screen it just opened. A distinct
+  event carries the same drawer-closing behaviour with none of the bounce.
+- **The last-admin guard cannot fire on its own.** An admin may not demote, deactivate or delete
+  themselves, so no reachable request ever leaves zero active admins for the second guard to
+  catch. It is kept as defence in depth and the *invariant* is what the test asserts (400, and
+  an active ADMIN still exists afterwards); the test says so in its docstring rather than
+  pretending to exercise a branch it cannot reach.
+- **`chars` on a knowledge row is stored characters, not source characters.** The chunker
+  overlaps by 120, so a 900-character file reports 1020. The row is asserted to equal the sum of
+  its own chunks rather than the file length.
+- **`UPLOAD_STORE` is written for both branches of `POST /upload`**, once, before the document
+  branch ingests; `DOC_INGEST` remains the `/documents` path's row. The plan named a call site,
+  not a count.
+- The knowledge screen uses a plain `<input type="file">` rather than `UploadButton.vue`, which
+  is a paperclip-sized icon button whose accessible name is about attaching to a message. The
+  plan allowed this ("do not bend it — a plain file input here is less code").
+- `describeError` gained 403 and 409 cases so the console's role and duplicate-username errors
+  read as sentences rather than as `Terjadi kesalahan pada server (409)`.
+- `api.ingestDocument` was added: `POST /documents` had no client wrapper, and the knowledge
+  screen needs the ingesting call, not `/upload`'s store-then-maybe-ingest.
+- Date-range filters are converted to whole days (`since` → `T00:00:00`, `until` → `T23:59:59`)
+  in the logs screen, and an offset-aware ISO string is brought into the naive `created_at`
+  frame server-side (`_naive` in `admin.py`), so a range includes the day it names.

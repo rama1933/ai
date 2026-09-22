@@ -38,6 +38,14 @@ psql -d agentic_rag_test -f db/schema.sql
 # migration instead of re-running the schema:
 #   psql -d agentic_rag -f db/migrations/003_message_attachments.sql
 
+# On a database created before SP2 (the admin console: activity_log, users.is_active):
+#   psql -d agentic_rag -f db/migrations/004_admin_console.sql
+
+# The first ADMIN is promoted by hand. POST /auth/register only ever creates a USER --
+# a public endpoint that can mint admins would be a hole. After this, admins create
+# admins from the console:
+psql -d agentic_rag -c "UPDATE users SET role='ADMIN' WHERE username='<you>';"
+
 /opt/homebrew/bin/python3.10 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 cp backend/.env.example backend/.env   # then set JWT_SECRET
@@ -104,6 +112,17 @@ cd frontend && npm run test
 | PATCH | `/sessions/{id}` | yes | rename a conversation |
 | DELETE | `/sessions/{id}` | yes | delete a conversation; its messages follow |
 | GET | `/attachments/{stored_name}` | yes | serve an attachment to the caller whose conversation references it |
+| GET | `/admin/stats` | ADMIN | counts and storage; the console header |
+| GET | `/admin/documents` | ADMIN | one row per ingested file (`q`, `limit`, `offset`) |
+| GET | `/admin/documents/{filename}/chunks` | ADMIN | that file's stored chunks, truncated |
+| DELETE | `/admin/documents/{filename}` | ADMIN | remove a file, its chunks and its upload |
+| GET | `/admin/logs` | ADMIN | the activity log, newest first (`action`, `username`, `since`, `until`) |
+| GET | `/admin/logs/actions` | ADMIN | the action values present, for the filter |
+| DELETE | `/admin/logs?before=` | ADMIN | retention purge; `before` is required |
+| GET | `/admin/users` | ADMIN | accounts with session and document counts |
+| POST | `/admin/users` | ADMIN | create an account with a role |
+| PATCH | `/admin/users/{id}` | ADMIN | change `role`, `is_active` or `password` |
+| DELETE | `/admin/users/{id}` | ADMIN | delete an account and everything it owns |
 
 ## Security notes
 
@@ -112,6 +131,8 @@ cd frontend && npm run test
 - Retrieved documents and OCR output are wrapped in `UNTRUSTED_DATA` markers and the system prompt forbids following instructions found inside them.
 - The model never chooses which image to OCR; the paths come from the authenticated request, and `image_ocr`'s schema still exposes zero parameters.
 - Stored attachments are served only to the caller whose conversation references them, and every failure is a 404 — a 403 would confirm existence.
+- The admin console is role-gated on the server: every `/admin/*` route sits behind `require_role("ADMIN")` and answers 403, never 404, to anyone else. The sidebar only hides the door. `users.is_active` is enforced in `get_current_user` on every request, so deactivating an account bites immediately rather than when its JWT expires.
+- The activity log holds metadata only — action, actor, target, and a small detail object (tool used, duration, character counts). It stores no message text, and no admin endpoint reads another account's `chat_history`: "see all history" means every *event*, and conversations stay owner-scoped.
 - `backend/.env` is git-ignored. Set a real `JWT_SECRET` before this leaves localhost.
 
 ## Not built
