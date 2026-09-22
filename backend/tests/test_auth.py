@@ -61,3 +61,26 @@ def test_password_is_not_stored_in_plain_text(client, fresh_username):
 
 def test_protected_route_requires_token(client):
     assert client.get("/chat/history?session_id=x").status_code == 401
+
+
+def test_deactivated_user_is_locked_out_at_once(client, fresh_username):
+    """Both paths, because only one of them goes through get_current_user.
+
+    A stale token is the case deactivation exists for: the UI can hold a valid JWT
+    for another hour, and it must stop working the moment the account is turned off.
+    """
+    client.post("/auth/register", json={"username": fresh_username, "password": "supersecret1"})
+    token = client.post("/auth/login", json={"username": fresh_username, "password": "supersecret1"}).json()[
+        "access_token"
+    ]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    session = SessionLocal()
+    session.query(User).filter_by(username=fresh_username).update({"is_active": False})
+    session.commit()
+    session.close()
+
+    assert client.get("/auth/me", headers=headers).status_code == 401
+    assert client.get("/sessions", headers=headers).status_code == 401
+    relogin = client.post("/auth/login", json={"username": fresh_username, "password": "supersecret1"})
+    assert relogin.status_code == 401

@@ -24,7 +24,9 @@ def register(payload: LoginRequest, db: Session = Depends(get_db)) -> dict[str, 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     user = db.query(User).filter_by(username=payload.username).one_or_none()
-    if user is None or not verify_password(payload.password, user.password_hash):
+    # A disabled account fails here with the same 401 as a wrong password, so the
+    # endpoint discloses nothing about which usernames exist.
+    if user is None or not verify_password(payload.password, user.password_hash) or not user.is_active:
         # No actor: this endpoint is unauthenticated, so the attempted name is the
         # only identity there is, and it goes in detail rather than the username
         # column, which means "the account that acted".

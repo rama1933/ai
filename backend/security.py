@@ -51,6 +51,10 @@ def get_current_user(
     user = db.query(User).filter_by(username=payload.get("sub")).one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unknown user")
+    # The row is already fetched on every request, so deactivation bites on the next
+    # call rather than whenever the token happens to expire.
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="account disabled")
     return user
 
 
