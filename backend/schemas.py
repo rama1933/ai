@@ -86,3 +86,31 @@ class UserResponse(BaseModel):
     username: str
     role: str
     created_at: datetime
+
+
+class AdminStats(BaseModel):
+    users: int
+    active_users: int
+    documents: int
+    chunks: int
+    sessions: int
+    messages: int
+    storage_bytes: int
+
+
+class KnowledgeItem(BaseModel):
+    """One ingested file. A document IS its filename: save_upload prefixes every
+    stored name with a uuid, so the name is a safe grouping key (SP2 Decision 1)."""
+
+    filename: str
+    display_name: str
+    chunks: int
+    chars: int
+    owner: str | None = None
+    created_at: datetime
+
+
+class ChunkItem(BaseModel):
+    chunk_index: int
+    chars: int
+    content: str  # truncated for display; the full text is not the console's job
