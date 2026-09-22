@@ -114,3 +114,16 @@ class ChunkItem(BaseModel):
     chunk_index: int
     chars: int
     content: str  # truncated for display; the full text is not the console's job
+
+
+class LogItem(BaseModel):
+    id: int
+    username: str | None = None
+    action: str
+    target: str | None = None
+    detail: dict = {}
+    created_at: datetime
+
+
+class LogPurgeResult(BaseModel):
+    deleted: int
