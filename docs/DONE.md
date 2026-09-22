@@ -599,8 +599,8 @@ $ curl -s -X POST localhost:8000/upload -H "Authorization: Bearer $TOKEN" \
 ```
 
 `<lg` screenshots with the sidebar closed and §15's single chat column intact:
-`sp1-375-light.png` and `sp1-375-dark.png` (375×667), with `sp1-1440-light.png` /
-`sp1-1440-dark.png` (1440×900) showing the permanent rail beside the unchanged column.
+`docs/screenshots/sp1-375-light.png` and `docs/screenshots/sp1-375-dark.png` (375×667), with `docs/screenshots/sp1-1440-light.png` /
+`docs/screenshots/sp1-1440-dark.png` (1440×900) showing the permanent rail beside the unchanged column.
 
 ## Full suites
 
