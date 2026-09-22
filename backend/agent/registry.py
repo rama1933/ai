@@ -64,6 +64,13 @@ TOOL_SCHEMAS: list[dict] = [
 class ToolOutcome:
     text: str
     sources: list[SourceRef] = field(default_factory=list)
+    # False when the tool supplied nothing to answer FROM -- an empty search, a
+    # rejected query, an image with no readable text. The orchestrator will not
+    # deliver a turn in which every outcome was ungrounded, which is what stops
+    # the model answering out of its own weights. `sources` cannot carry this:
+    # sql_query never sets one, and the scoped-rag fallback sets four. Defaults
+    # to True so a tool that returns prose is trusted unless it says otherwise.
+    grounded: bool = True
 
 
 def _wrap(payload: str) -> str:
@@ -98,7 +105,10 @@ def dispatch(
         if filenames and not hits:
             hits = first_chunks(db, filenames)
         if not hits:
-            return ToolOutcome(text="No matching document found in the knowledge base. (tidak ditemukan)")
+            return ToolOutcome(
+                text="No matching document found in the knowledge base. (tidak ditemukan)",
+                grounded=False,
+            )
         body = "\n\n".join(f"[{h.filename}] {h.content}" for h in hits)
         return ToolOutcome(
             text=_wrap(body),
@@ -109,7 +119,10 @@ def dispatch(
         # Every attached image is read; the model cannot name one.
         paths = image_paths or []
         if not paths:
-            return ToolOutcome(text="No image was attached to this message, so OCR is not possible.")
+            return ToolOutcome(
+                text="No image was attached to this message, so OCR is not possible.",
+                grounded=False,
+            )
         sections: list[str] = []
         sources: list[SourceRef] = []
         for path in paths:
@@ -124,15 +137,23 @@ def dispatch(
                 continue
             sections.append(f"[{display}]\n{text}")
             sources.append(SourceRef(filename=display))
-        return ToolOutcome(text=_wrap("\n\n".join(sections)), sources=sources)
+        # Grounded only when at least one image actually yielded text: the three
+        # failure modes above all return a helpful non-empty string, so the text
+        # cannot be the signal.
+        return ToolOutcome(text=_wrap("\n\n".join(sections)), sources=sources, grounded=bool(sources))
 
     if name == "sql_query":
         try:
             rows = sql_query(str(arguments.get("query", "")))
         except SqlRejected as exc:
-            return ToolOutcome(text=f"Query rejected: {exc}")
+            return ToolOutcome(text=f"Query rejected: {exc}", grounded=False)
         except Exception as exc:  # noqa: BLE001 - surfaced to the model so it can retry
-            return ToolOutcome(text=f"Query failed: {type(exc).__name__}: {exc}")
-        return ToolOutcome(text=_wrap(repr(rows)))
+            return ToolOutcome(text=f"Query failed: {type(exc).__name__}: {exc}", grounded=False)
+        # An empty result set is not data: repr([]) is a success-shaped "[]" that
+        # would otherwise let the model narrate a figure it never read.
+        return ToolOutcome(text=_wrap(repr(rows)), grounded=bool(rows))
 
-    return ToolOutcome(text=f"Unknown tool {name!r}. Available: rag_search, image_ocr, sql_query.")
+    return ToolOutcome(
+        text=f"Unknown tool {name!r}. Available: rag_search, image_ocr, sql_query.",
+        grounded=False,
+    )

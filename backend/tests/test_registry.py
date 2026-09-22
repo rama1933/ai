@@ -47,6 +47,9 @@ def test_dispatch_image_ocr_uses_session_image_not_model_supplied_path(monkeypat
 def test_dispatch_image_ocr_without_uploaded_image_is_an_error_message(monkeypatch):
     outcome = registry.dispatch("image_ocr", {}, db=None, image_paths=[])
     assert "no image" in outcome.text.lower()
+    # grounded=False as well: the text reads like a helpful sentence, so without the
+    # flag the orchestrator counted the turn as having read something.
+    assert outcome.grounded is False
 
 
 def test_dispatch_sql_query_returns_rejection_as_text_not_exception(monkeypatch):
