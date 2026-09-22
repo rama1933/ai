@@ -6,8 +6,11 @@ is deliberately absent -- SP2 Decision 3.
 
 The helper does not commit. It rides the request's unit of work like every other
 write in this codebase, so a request that rolls back leaves no audit row claiming
-it succeeded. The streaming chat turn is the one exception, and there it is called
-on the same SessionLocal that persists the assistant row, for the same reason.
+it succeeded. The streaming chat turn is where that matters most, and there it is
+called on the same SessionLocal that persists the assistant row -- one commit for
+both, so a completed turn cannot be logged without its answer or the reverse. (A
+turn the client aborted mid-stream is a third thing: chat.py persists the partial
+text but writes no CHAT_TURN row, because the turn never completed.)
 
 ponytail: a failed login is written from an unauthenticated endpoint, so it is an
 unbounded row source -- one row per attempt, including attempts by anything that

@@ -25,11 +25,15 @@ window.addEventListener('hashchange', () => {
 })
 
 export function useView() {
-  function go(next: View): void {
+  /** `replace` for a redirect nobody asked for -- a push there would leave a history
+   * entry the back button returns to, only to be bounced off it again. */
+  function go(next: View, options: { replace?: boolean } = {}): void {
     view.value = next
     // Assigning the hash is what makes the back button work; the hashchange
     // listener above then writes the same value back into the ref.
-    window.location.hash = `#/${next}`
+    const hash = `#/${next}`
+    if (options.replace) window.location.replace(hash)
+    else window.location.hash = hash
   }
 
   const isAdminView = computed(() => view.value.startsWith('admin/'))

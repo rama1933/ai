@@ -27,8 +27,9 @@ def upload(
     with stored.open("rb") as handle:
         kind, mime = sniff(stored.name, handle.read(64))
 
-    # One row for "this file is now on disk", in both branches: a document is also
-    # ingested below, and that is the DOC_INGEST row.
+    # One row for "this file is now on disk". A document is ingested below as well and
+    # that is the DOC_INGEST row; should that ingest fail, the file is removed with it
+    # and this row goes too, which is why the two stay consistent.
     audit.record(db, audit.UPLOAD_STORE, user=user, target=stored.name, kind=kind, size=stored.stat().st_size)
 
     def response(status: str) -> UploadResponse:
@@ -47,10 +48,14 @@ def upload(
     if kind == "document":
         try:
             ingest_file(db, stored, user.id)
-        except IngestError as exc:
+        except (IngestError, EmbeddingError) as exc:
+            # The stored file goes with the failure. Nothing references a file that
+            # never became chunks: leaving it would be an orphan invisible to both the
+            # knowledge screen and the log, while still counting toward storage_bytes.
+            stored.unlink(missing_ok=True)
+            if isinstance(exc, EmbeddingError):
+                raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except EmbeddingError as exc:
-            raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
         return response("processed")
 
     # Images are not OCR'd here: the agent decides whether OCR is needed.

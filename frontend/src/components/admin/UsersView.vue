@@ -97,8 +97,11 @@ async function changeRole(row: AdminUserItem, event: Event): Promise<void> {
   try {
     applyRow(await api.admin.updateUser(row.id, { role }))
   } catch (err) {
-    error.value = describeError(err)
+    // Reload first, then show why: load() clears the banner on entry, so setting the
+    // message before it would erase it before it ever rendered.
+    const message = describeError(err)
     await load() // put the select back to what the server still believes
+    error.value = message
   }
 }
 

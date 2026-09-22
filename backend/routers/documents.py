@@ -29,10 +29,13 @@ def ingest_document(
 
     try:
         chunks = ingest_file(db, stored_path, user.id)
-    except IngestError as exc:
+    except (IngestError, EmbeddingError) as exc:
+        # No chunks means nothing references this file -- and an orphan would be
+        # invisible to the knowledge screen while still counting toward storage_bytes.
+        stored_path.unlink(missing_ok=True)
+        if isinstance(exc, EmbeddingError):
+            raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except EmbeddingError as exc:
-        raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
 
     audit.record(db, audit.DOC_INGEST, user=user, target=stored_path.name, chunks=chunks)
     return IngestResponse(filename=stored_path.name, chunks=chunks)

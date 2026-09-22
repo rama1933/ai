@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { computed, ref } from 'vue'
 
-import { api, ROLE_KEY, TOKEN_KEY, USERNAME_KEY } from '../services/api'
+import { api, markSessionEnded, ROLE_KEY, TOKEN_KEY, USERNAME_KEY } from '../services/api'
 import { useSessions } from './useSessions'
 
 const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
@@ -49,7 +49,13 @@ export function useAuth() {
       // Sign out only when the server actually rejected the token. A network
       // failure or a 500 leaves the token valid, and the axios interceptor
       // deliberately defers /auth/* 401s to this function (api.ts:51).
-      if (axios.isAxiosError(error) && error.response?.status === 401) logout()
+      if (axios.isAxiosError(error) && error.response?.status === 401) {
+        // The cold-start path: a tab opened the morning after the account was
+        // deactivated never sees a 401 from any other call, so the note has to be
+        // written here too or the login form has nothing to explain.
+        markSessionEnded()
+        logout()
+      }
     }
   }
 

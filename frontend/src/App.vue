@@ -17,8 +17,10 @@ const showConsole = computed(() => isAuthenticated.value && role.value === 'ADMI
 
 // Courtesy, not the boundary -- the API's 403 is. A non-admin who lands on an admin
 // hash is sent back to the chat instead of to a screen that would only error.
+// Replaced, not pushed: a pushed entry would put the back button on the hash it was
+// just bounced off, so back would never reach the screen before it.
 watchEffect(() => {
-  if (isAdminView.value && role.value !== 'ADMIN') go('chat')
+  if (isAdminView.value && role.value !== 'ADMIN') go('chat', { replace: true })
 })
 
 onMounted(() => {

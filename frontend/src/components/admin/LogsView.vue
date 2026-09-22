@@ -23,6 +23,7 @@ const PAGE_SIZE = 50
 
 const rows = ref<LogItem[]>([])
 const actions = ref<string[]>([])
+const actionsError = ref<string | null>(null)
 const isLoading = ref(false)
 const error = ref<string | null>(null)
 const offset = ref(0)
@@ -121,8 +122,11 @@ function formatDetail(value: unknown): string {
 onMounted(async () => {
   try {
     actions.value = await api.admin.logActions()
-  } catch {
-    actions.value = [] // the filter falls back to empty; the table still works
+  } catch (err) {
+    // An empty select and a failed call look identical otherwise, and the operator
+    // would conclude the console has no such filter. The table below still works.
+    actions.value = []
+    actionsError.value = describeError(err)
   }
   await load()
 })
@@ -144,6 +148,9 @@ watch([action, since, until], applyFilters)
           <option value="">Semua aksi</option>
           <option v-for="name in actions" :key="name" :value="name">{{ name }}</option>
         </select>
+        <p v-if="actionsError" class="max-w-[14rem] text-[11px] text-danger" :title="actionsError">
+          Daftar aksi gagal dimuat.
+        </p>
       </div>
 
       <div class="flex flex-col gap-1">

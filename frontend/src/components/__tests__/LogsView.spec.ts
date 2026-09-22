@@ -57,6 +57,16 @@ describe('LogsView', () => {
     expect(options).toEqual(['Semua aksi', 'AUTH_LOGIN', 'CHAT_TURN'])
   })
 
+  it('says so when the action list fails, instead of showing an empty filter', async () => {
+    vi.spyOn(api.admin, 'logActions').mockRejectedValue(new Error('boom'))
+
+    const wrapper = mount(LogsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Daftar aksi gagal dimuat')
+    expect(wrapper.text()).toContain('CHAT_TURN'), 'the table below still works'
+  })
+
   it('refetches from the first page when a filter changes', async () => {
     const wrapper = mount(LogsView)
     await flushPromises()

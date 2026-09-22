@@ -119,6 +119,8 @@ export interface AdminUserItem {
 export const TOKEN_KEY = 'agentic-rag-token'
 export const ROLE_KEY = 'agentic-rag-role'
 export const USERNAME_KEY = 'agentic-rag-username'
+/** Set just before a forced reload, read by the login form on the other side. */
+export const SESSION_ENDED_KEY = 'agentic-rag-session-ended'
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000',
@@ -136,10 +138,24 @@ http.interceptors.request.use((config) => {
  * or expired. Without this the UI keeps rendering the chat and every send
  * fails with a raw axios message, leaving the person stuck on a dead screen.
  */
+/**
+ * Leave a note for the login form, across whatever ends the session. An admin
+ * deactivating an account ends one this way, and without it the next thing that
+ * person sees is "wrong password" when they type the right one.
+ */
+export function markSessionEnded(): void {
+  try {
+    sessionStorage.setItem(SESSION_ENDED_KEY, '1')
+  } catch {
+    // A browser that refuses session storage still gets the sign-out.
+  }
+}
+
 export function handleUnauthorized(): Promise<never> {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ROLE_KEY)
   localStorage.removeItem(USERNAME_KEY)
+  markSessionEnded()
   window.location.reload()
   return new Promise(() => {}) // the page is being replaced; never settle
 }

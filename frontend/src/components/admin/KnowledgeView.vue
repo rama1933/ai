@@ -50,17 +50,23 @@ const uploadError = ref<string | null>(null)
 const hasPrevious = computed(() => offset.value > 0)
 const hasNext = computed(() => rows.value.length === PAGE_SIZE)
 
+// Only the newest request may write. A search typed over a page turn can otherwise
+// land out of order, and the table would show the older answer under the newer query.
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   isLoading.value = true
   error.value = null
   try {
-    rows.value = await api.admin.listDocuments({
+    const result = await api.admin.listDocuments({
       q: query.value.trim() || undefined,
       limit: PAGE_SIZE,
       offset: offset.value,
     })
+    if (token === loadToken) rows.value = result
   } catch (err) {
-    error.value = describeError(err)
+    if (token === loadToken) error.value = describeError(err)
   } finally {
     isLoading.value = false
   }
@@ -81,14 +87,20 @@ async function toggleChunks(row: KnowledgeItem): Promise<void> {
     collapse()
     return
   }
-  expandedFilename.value = row.filename
+  const requested = row.filename
+  expandedFilename.value = requested
   chunks.value = []
   isLoadingChunks.value = true
   try {
-    chunks.value = await api.admin.listChunks(row.filename)
+    const result = await api.admin.listChunks(requested)
+    // A row opened, collapsed or switched while this was in flight must not have its
+    // chunks written under whichever header is showing now.
+    if (expandedFilename.value === requested) chunks.value = result
   } catch (err) {
-    error.value = describeError(err)
-    expandedFilename.value = null
+    if (expandedFilename.value === requested) {
+      error.value = describeError(err)
+      expandedFilename.value = null
+    }
   } finally {
     isLoadingChunks.value = false
   }

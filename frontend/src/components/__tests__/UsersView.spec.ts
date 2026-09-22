@@ -96,6 +96,23 @@ describe('UsersView', () => {
     expect(wrapper.find('[role="alert"]').text()).toContain('username already exists')
   })
 
+  it('explains a rejected role change instead of silently snapping back', async () => {
+    // The reload that restores the select clears the banner on entry, so the message
+    // has to be re-set after it -- otherwise the change just undoes itself.
+    vi.spyOn(api.admin, 'updateUser').mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 400, data: { detail: 'the last active admin cannot be demoted' } },
+    })
+    const wrapper = mount(UsersView)
+    await flushPromises()
+
+    await rowFor(wrapper, 'budi')?.find('select').setValue('ADMIN')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('last active admin')
+    expect(rowFor(wrapper, 'budi')?.find('select').element.value).toBe('USER')
+  })
+
   it('toggles activation through the API', async () => {
     const updateSpy = vi
       .spyOn(api.admin, 'updateUser')

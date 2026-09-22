@@ -162,14 +162,18 @@ def delete_document(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown document")
 
+    audit.record(db, audit.DOC_DELETE, user=user, target=filename, chunks=deleted)
+    # Committed before the file goes, not after: unlinking is irreversible, and doing
+    # it inside a unit of work that might still roll back would lose the file while
+    # the rows it belonged to came back.
+    db.commit()
+
     upload_dir = Path(get_settings().upload_dir).resolve()
     # Only the final component, and the resolved result must stay inside upload_dir --
     # the same guard _resolve_attachments applies to a client-supplied name.
     candidate = (upload_dir / Path(filename).name).resolve()
     if candidate.is_relative_to(upload_dir):
         candidate.unlink(missing_ok=True)
-
-    audit.record(db, audit.DOC_DELETE, user=user, target=filename, chunks=deleted)
 
 
 @router.get("/logs", response_model=list[LogItem])

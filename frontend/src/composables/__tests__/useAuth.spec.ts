@@ -1,13 +1,14 @@
 import { AxiosError, type AxiosResponse } from 'axios'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { api } from '../../services/api'
+import { api, SESSION_ENDED_KEY } from '../../services/api'
 import { useAuth } from '../useAuth'
 
 // vite.config.ts sets no restoreMocks, so without this the spied api methods
 // stay mocked for every case added below them.
 afterEach(() => {
   vi.restoreAllMocks()
+  sessionStorage.clear()
 })
 
 // useAuth holds its state in module-level refs, so these tests drive that state
@@ -42,6 +43,22 @@ describe('useAuth.fetchMe', () => {
     await auth.fetchMe()
 
     expect(auth.isAuthenticated.value).toBe(false)
+  })
+
+  it('leaves a note when the rejection is what ended the session', async () => {
+    // The cold-start shape of a deactivated account: opening the app the next day
+    // produces this one 401 and nothing else, so the login form has to be told here
+    // or the person types the right password and is told it is wrong.
+    const auth = useAuth()
+    auth.token.value = 'stale-token'
+    const rejected = new AxiosError('Unauthorized', 'ERR_BAD_REQUEST', undefined, undefined, {
+      status: 401,
+    } as AxiosResponse)
+    vi.spyOn(api, 'fetchMe').mockRejectedValue(rejected)
+
+    await auth.fetchMe()
+
+    expect(sessionStorage.getItem(SESSION_ENDED_KEY)).toBe('1')
   })
 
   it('keeps the session when the call fails for a reason other than a rejection', async () => {

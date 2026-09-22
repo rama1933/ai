@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { useAuth } from '../composables/useAuth'
-import { api, describeError } from '../services/api'
+import { api, describeError, SESSION_ENDED_KEY } from '../services/api'
 import AppIcon from './AppIcon.vue'
 import ThemeToggle from './ThemeToggle.vue'
 
@@ -14,6 +14,18 @@ const showPassword = ref(false)
 const isRegistering = ref(false)
 const isSubmitting = ref(false)
 const error = ref<string | null>(null)
+const sessionEnded = ref(false)
+
+// A forced sign-out leaves a note behind (api.ts). Read it once, then drop it: it
+// describes the session that just ended, not this one.
+onMounted(() => {
+  try {
+    sessionEnded.value = sessionStorage.getItem(SESSION_ENDED_KEY) === '1'
+    sessionStorage.removeItem(SESSION_ENDED_KEY)
+  } catch {
+    sessionEnded.value = false
+  }
+})
 
 const canSubmit = computed(
   () => username.value.trim().length >= 3 && password.value.length >= 8 && !isSubmitting.value,
@@ -32,6 +44,7 @@ async function submit(): Promise<void> {
   }
 
   error.value = null
+  sessionEnded.value = false
   isSubmitting.value = true
   try {
     if (isRegistering.value) await api.register(username.value, password.value)
@@ -109,6 +122,17 @@ async function submit(): Promise<void> {
             </button>
           </div>
         </div>
+
+        <p
+          v-if="sessionEnded && !error"
+          class="flex items-start gap-2 rounded-xl bg-elevated px-3 py-2.5 text-xs text-subtle ring-1 ring-border"
+          role="status"
+        >
+          <AppIcon name="alert" :size="15" class="mt-px" />
+          <span class="flex-1 leading-relaxed">
+            Sesi Anda berakhir. Silakan masuk kembali — bila akun Anda dinonaktifkan, hubungi admin.
+          </span>
+        </p>
 
         <p
           v-if="error"

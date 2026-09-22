@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 
 import { useAuth } from '../../composables/useAuth'
 import { useView, type View } from '../../composables/useView'
-import { api, type AdminStats } from '../../services/api'
+import { api, describeError, type AdminStats } from '../../services/api'
 import AppIcon from '../AppIcon.vue'
 import SessionSidebar from '../SessionSidebar.vue'
 import ThemeToggle from '../ThemeToggle.vue'
@@ -26,15 +26,18 @@ const TABS: { view: View; label: string; icon: 'database' | 'history' | 'user' }
 ]
 
 const stats = ref<AdminStats | null>(null)
+const statsError = ref<string | null>(null)
 const drawerOpen = ref(false)
 
 onMounted(async () => {
   try {
     stats.value = await api.admin.stats()
-  } catch {
-    // The header is decoration; a failed summary must not blank the screen. The
-    // view itself reports its own errors through describeError.
-    stats.value = null
+  } catch (err) {
+    // The header is decoration; a failed summary must not blank the screen. It does
+    // have to say so, though -- silently falling back to the username reads as
+    // "nothing to report" rather than "this did not load". The view below reports
+    // its own errors through describeError.
+    statsError.value = describeError(err)
   }
 })
 
@@ -91,6 +94,10 @@ function onSidebarNavigate(): void {
                 {{ stats.users }} pengguna ({{ stats.active_users }} aktif) · {{ stats.documents }} dokumen ·
                 {{ stats.chunks }} chunk · {{ stats.sessions }} percakapan · {{ stats.messages }} pesan ·
                 {{ formatBytes(stats.storage_bytes) }}
+              </template>
+              <template v-else-if="statsError">
+                <span class="text-danger" :title="statsError">Ringkasan tidak tersedia</span> ·
+                {{ username ?? '' }}
               </template>
               <template v-else>{{ username ?? '' }}</template>
             </p>

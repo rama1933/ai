@@ -743,6 +743,26 @@ The courtesy layer, from the browser console while signed in as `sp2-viewer`:
 
 A USER who types an admin hash lands back on the chat; the 403 above is the actual boundary.
 
+## The write paths, driven through the browser
+
+Not curl: the real form, the real dialog, the real API. Creating `sp2-live-check` from the
+Users screen and then toggling and deleting it left this in the database:
+
+```
+$ psql -d agentic_rag -c "select action, username, target, detail from activity_log where target='sp2-live-check'"
+      action       | username  |     target     |            detail
+-------------------+-----------+----------------+------------------------------
+ ADMIN_USER_DELETE | sp2-check | sp2-live-check | {}
+ ADMIN_USER_UPDATE | sp2-check | sp2-live-check | {"fields": ["is_active"]}
+ ADMIN_USER_CREATE | sp2-check | sp2-live-check | {"role": "READ_ONLY"}
+
+$ psql -d agentic_rag -c "select count(*) from users where username='sp2-live-check'"
+0
+```
+
+Three writes, three audit rows, the account gone — and the update row carries the field
+name without the value, which is the whole point of the `{"fields": [...]}` shape.
+
 ## Screenshots
 
 | File | Shows |
@@ -755,24 +775,54 @@ A USER who types an admin hash lands back on the chat; the 403 above is the actu
 
 All at 1440×900.
 
+## Review round — what a second pair of eyes changed
+
+Two review agents swept the range after the tasks were committed (one on correctness, one on
+error handling). Both ran their own suites before reporting. Six defects, all fixed in
+`fix:`/`feat:` commits after the sweep, each with the test that would have caught it — and
+each new test was run against the unfixed code first, to confirm it fails there:
+
+| # | Defect | Fixed by |
+|---|---|---|
+| 1 | `PATCH /admin/users/{id}` with an explicit `{"role": null}` assigned `None` onto a NOT NULL column → 500 | `exclude_none=True`; `test_an_explicit_null_field_is_left_alone_not_written` — **confirmed failing (1 failed) before the fix** |
+| 2 | A document that failed to ingest left its stored file on disk: invisible to the knowledge screen and the log, still counted in `storage_bytes` | both routers unlink on the ingest failure; `test_upload_of_an_unreadable_document_leaves_nothing_behind` — **confirmed failing before the fix** |
+| 3 | `UsersView.changeRole`'s error was erased by the reload it called next, so a rejected role change silently snapped back | message re-set after the reload; `explains a rejected role change instead of silently snapping back` — **confirmed failing before the fix** |
+| 4 | A forced 401 signed the person out silently and the login form then blamed their password. The cold-start variant (`fetchMe` on a deactivated account) was the case the first fix missed | `markSessionEnded()` on both paths + a note on the login form; `leaves a note when the rejection is what ended the session` |
+| 5 | The courtesy redirect pushed a history entry, so Back landed on the admin hash and was bounced again — Back could never leave it | `go(view, { replace: true })` |
+| 6 | Two silent frontend fallbacks: a failed `/admin/logs/actions` looked like "no actions exist", and a failed `/admin/stats` looked like "nothing to report" | both now say so; `says so when the action list fails…`, `says the summary is unavailable…` |
+
+Also hardened, without a defect behind it: the knowledge screen's chunk and page loads now
+ignore a response that arrives after a newer one (an out-of-order answer would have landed
+under the wrong header), and `DELETE /admin/documents/{filename}` commits before unlinking,
+so an irreversible file removal can no longer happen inside a unit of work that rolls back.
+
+Two things the review raised that were deliberately **not** changed: the last-admin guard
+stays even though the self-guards answer every reachable request first (defence in depth, and
+the invariant is what the test asserts), and a failed login's attempted username stays in
+`detail` rather than the `username` column, because the plan pinned that shape and the logs
+filter matches both.
+
 ## Full suites
 
 ```
 $ cd backend && ../.venv/bin/pytest tests/ -v
-179 passed, 1 warning in 113.14s          # includes the 10 live-model integration tests
+181 passed, 1 warning in 110.75s          # includes the 10 live-model integration tests
 
 $ cd backend && ../.venv/bin/pytest tests/ -m "not integration" -v
-169 passed, 10 deselected, 1 warning in 47.64s
+171 passed, 10 deselected, 1 warning in 49.23s
 
 $ cd frontend && npm run test
-Test Files  11 passed (11)
-      Tests  62 passed (62)
+Test Files  13 passed (13)
+      Tests  69 passed (69)
 
 $ cd frontend && npm run build
 dist/assets/index-Dgt76T8G.css   30.44 kB │ gzip:   6.34 kB
 dist/assets/index-COKZijAT.js   505.00 kB │ gzip: 178.72 kB
 ✓ built in 753ms
 ```
+
+The counts above are the post-review ones. The per-task table below records what each task's
+own suite printed when that task was closed, which is why its numbers are lower.
 
 ## SP2 rows, one per task
 
