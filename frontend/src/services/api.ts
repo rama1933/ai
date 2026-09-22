@@ -239,6 +239,15 @@ export const api = {
     return data
   },
 
+  /** POST /documents: store AND ingest in one call. The admin knowledge screen
+   * uses this rather than /upload, which only ingests documents as a side effect. */
+  async ingestDocument(file: File): Promise<{ filename: string; chunks: number }> {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await http.post('/documents', form)
+    return data
+  },
+
   async fetchHistory(sessionId: string): Promise<HistoryItem[]> {
     const { data } = await http.get('/chat/history', { params: { session_id: sessionId } })
     return data

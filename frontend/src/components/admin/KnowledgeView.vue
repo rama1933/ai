@@ -1,3 +1,350 @@
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue'
+import {
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogOverlay,
+  AlertDialogPortal,
+  AlertDialogRoot,
+  AlertDialogTitle,
+} from 'reka-ui'
+
+import { api, describeError, type ChunkItem, type KnowledgeItem } from '../../services/api'
+import AppIcon from '../AppIcon.vue'
+
+/**
+ * What the assistant knows: every ingested file, its chunks, and the two things you
+ * would want to do about it -- look inside, or remove it.
+ *
+ * A document is its stored filename (SP2 Decision 1), which is what the API groups
+ * by and what every call here addresses.
+ */
+const PAGE_SIZE = 25
+
+const rows = ref<KnowledgeItem[]>([])
+const isLoading = ref(false)
+const error = ref<string | null>(null)
+const query = ref('')
+const offset = ref(0)
+
+const expandedFilename = ref<string | null>(null)
+const chunks = ref<ChunkItem[]>([])
+const isLoadingChunks = ref(false)
+
+const deleteOpen = ref(false)
+const pendingDelete = ref<KnowledgeItem | null>(null)
+
+// Dismissal (Esc, overlay, Batal) only closes; the row is cleared from the watcher,
+// which runs after the synchronous click stack. The action button's own close fires
+// before its handler, so without this the confirm would read a null row and delete
+// nothing. Same pattern as SessionSidebar's delete dialog.
+watch(deleteOpen, (open) => {
+  if (!open) pendingDelete.value = null
+})
+
+const uploading = ref(false)
+const uploadError = ref<string | null>(null)
+
+const hasPrevious = computed(() => offset.value > 0)
+const hasNext = computed(() => rows.value.length === PAGE_SIZE)
+
+async function load(): Promise<void> {
+  isLoading.value = true
+  error.value = null
+  try {
+    rows.value = await api.admin.listDocuments({
+      q: query.value.trim() || undefined,
+      limit: PAGE_SIZE,
+      offset: offset.value,
+    })
+  } catch (err) {
+    error.value = describeError(err)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+function search(): void {
+  offset.value = 0
+  void load()
+}
+
+function move(delta: number): void {
+  offset.value = Math.max(0, offset.value + delta)
+  void load()
+}
+
+async function toggleChunks(row: KnowledgeItem): Promise<void> {
+  if (expandedFilename.value === row.filename) {
+    collapse()
+    return
+  }
+  expandedFilename.value = row.filename
+  chunks.value = []
+  isLoadingChunks.value = true
+  try {
+    chunks.value = await api.admin.listChunks(row.filename)
+  } catch (err) {
+    error.value = describeError(err)
+    expandedFilename.value = null
+  } finally {
+    isLoadingChunks.value = false
+  }
+}
+
+function collapse(): void {
+  expandedFilename.value = null
+  chunks.value = []
+}
+
+function requestDelete(row: KnowledgeItem): void {
+  pendingDelete.value = row
+  deleteOpen.value = true
+}
+
+async function confirmDelete(): Promise<void> {
+  const row = pendingDelete.value
+  deleteOpen.value = false
+  if (!row) return
+  try {
+    await api.admin.deleteDocument(row.filename)
+  } catch (err) {
+    error.value = describeError(err)
+    return
+  }
+  if (expandedFilename.value === row.filename) collapse()
+  await load()
+}
+
+async function onFileChosen(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // allow re-selecting the same file
+  if (!file) return
+  uploading.value = true
+  uploadError.value = null
+  try {
+    await api.ingestDocument(file)
+    offset.value = 0
+    await load()
+  } catch (err) {
+    uploadError.value = describeError(err)
+  } finally {
+    uploading.value = false
+  }
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString('id-ID')
+}
+
+onMounted(() => {
+  void load()
+})
+</script>
+
 <template>
-  <p class="text-sm text-subtle">Memuat…</p>
+  <section class="flex flex-col gap-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="relative min-w-[12rem] flex-1">
+        <AppIcon
+          name="search"
+          :size="14"
+          class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
+        />
+        <label class="sr-only" for="knowledge-search">Cari dokumen</label>
+        <input
+          id="knowledge-search"
+          v-model="query"
+          type="search"
+          placeholder="Cari nama berkas…"
+          class="w-full rounded-xl border border-border bg-surface py-2.5 pl-8 pr-3 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+          @keydown.enter="search"
+        />
+      </div>
+
+      <button
+        type="button"
+        class="cursor-pointer rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
+        @click="search"
+      >
+        Cari
+      </button>
+
+      <label
+        class="flex cursor-pointer items-center gap-2 rounded-xl bg-primary px-3.5 py-2.5 text-sm font-medium text-primary-fg shadow-glow transition-all hover:brightness-110"
+        :class="uploading ? 'pointer-events-none opacity-60' : ''"
+      >
+        <AppIcon name="plus" :size="15" />
+        {{ uploading ? 'Mengindeks…' : 'Unggah dokumen' }}
+        <!-- A plain file input rather than UploadButton: that one is a paperclip
+             sized for the composer, and bending it into a labelled button here
+             would cost more than these two lines. -->
+        <input
+          type="file"
+          class="hidden"
+          accept=".pdf,.txt,.md"
+          :disabled="uploading"
+          @change="onFileChosen"
+        />
+      </label>
+    </div>
+
+    <p
+      v-if="uploadError"
+      class="rounded-xl bg-danger-soft px-3 py-2 text-xs leading-relaxed text-danger ring-1 ring-danger/20"
+      role="alert"
+    >
+      {{ uploadError }}
+    </p>
+    <p
+      v-if="error"
+      class="rounded-xl bg-danger-soft px-3 py-2 text-xs leading-relaxed text-danger ring-1 ring-danger/20"
+      role="alert"
+    >
+      {{ error }}
+    </p>
+
+    <div class="overflow-x-auto rounded-2xl border border-border bg-surface">
+      <table class="w-full min-w-[44rem] border-collapse text-sm">
+        <thead>
+          <tr class="border-b border-border text-left text-[11px] uppercase tracking-wider text-faint">
+            <th class="px-4 py-3 font-semibold">Dokumen</th>
+            <th class="px-4 py-3 font-semibold">Chunk</th>
+            <th class="px-4 py-3 font-semibold">Karakter</th>
+            <th class="px-4 py-3 font-semibold">Pemilik</th>
+            <th class="px-4 py-3 font-semibold">Diunggah</th>
+            <th class="px-4 py-3 font-semibold"><span class="sr-only">Aksi</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template v-for="row in rows" :key="row.filename">
+            <tr class="border-b border-border/60 align-top">
+              <td class="max-w-[20rem] px-4 py-3">
+                <button
+                  type="button"
+                  class="flex cursor-pointer items-start gap-2 text-left text-fg transition-colors hover:text-primary"
+                  :aria-expanded="expandedFilename === row.filename"
+                  @click="toggleChunks(row)"
+                >
+                  <AppIcon
+                    :name="expandedFilename === row.filename ? 'eye-off' : 'eye'"
+                    :size="14"
+                    class="mt-0.5 text-faint"
+                  />
+                  <span class="break-all">{{ row.display_name }}</span>
+                </button>
+                <p class="mt-1 break-all pl-6 text-[11px] text-faint">{{ row.filename }}</p>
+              </td>
+              <td class="px-4 py-3 text-subtle">{{ formatNumber(row.chunks) }}</td>
+              <td class="px-4 py-3 text-subtle">{{ formatNumber(row.chars) }}</td>
+              <td class="px-4 py-3 text-subtle">{{ row.owner ?? '—' }}</td>
+              <td class="whitespace-nowrap px-4 py-3 text-subtle">{{ formatDate(row.created_at) }}</td>
+              <td class="px-4 py-3 text-right">
+                <button
+                  type="button"
+                  class="grid h-8 w-8 cursor-pointer place-items-center rounded-lg text-faint transition-colors hover:bg-danger-soft hover:text-danger"
+                  :aria-label="`Hapus ${row.display_name}`"
+                  :title="`Hapus ${row.display_name}`"
+                  @click="requestDelete(row)"
+                >
+                  <AppIcon name="trash" :size="15" />
+                </button>
+              </td>
+            </tr>
+
+            <tr v-if="expandedFilename === row.filename" class="border-b border-border/60 bg-bg">
+              <td colspan="6" class="px-4 py-3">
+                <p v-if="isLoadingChunks" class="text-xs text-faint">Memuat chunk…</p>
+                <ol v-else class="flex flex-col gap-2">
+                  <li
+                    v-for="chunk in chunks"
+                    :key="chunk.chunk_index"
+                    class="rounded-xl border border-border bg-surface p-3"
+                  >
+                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                      Chunk {{ chunk.chunk_index }} · {{ formatNumber(chunk.chars) }} karakter
+                    </p>
+                    <p class="whitespace-pre-wrap break-words text-xs leading-relaxed text-subtle">
+                      {{ chunk.content }}
+                    </p>
+                  </li>
+                </ol>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+
+      <p v-if="rows.length === 0" class="px-4 py-10 text-center text-sm text-faint">
+        {{ isLoading ? 'Memuat dokumen…' : 'Belum ada dokumen.' }}
+      </p>
+    </div>
+
+    <div class="flex items-center justify-between gap-3">
+      <p class="text-xs text-faint">
+        <template v-if="rows.length > 0">
+          Baris {{ offset + 1 }}–{{ offset + rows.length }}
+        </template>
+      </p>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!hasPrevious"
+          @click="move(-PAGE_SIZE)"
+        >
+          Sebelumnya
+        </button>
+        <button
+          type="button"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="!hasNext"
+          @click="move(PAGE_SIZE)"
+        >
+          Berikutnya
+        </button>
+      </div>
+    </div>
+
+    <AlertDialogRoot :open="deleteOpen" @update:open="(open) => (deleteOpen = open)">
+      <AlertDialogPortal>
+        <AlertDialogOverlay class="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm" />
+        <AlertDialogContent
+          class="fixed left-1/2 top-1/2 z-[70] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-surface p-5 shadow-2xl focus:outline-none"
+        >
+          <AlertDialogTitle class="font-display text-base font-semibold text-fg">Hapus dokumen?</AlertDialogTitle>
+          <AlertDialogDescription class="mt-1.5 break-words text-sm leading-relaxed text-subtle">
+            “{{ pendingDelete?.display_name }}” beserta seluruh chunk-nya akan dihapus dari basis pengetahuan,
+            dan berkas unggahannya ikut terhapus. Tindakan ini tidak bisa dibatalkan.
+          </AlertDialogDescription>
+          <div class="mt-4 flex justify-end gap-2">
+            <AlertDialogCancel
+              class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm text-subtle transition-colors hover:bg-elevated hover:text-fg"
+            >
+              Batal
+            </AlertDialogCancel>
+            <AlertDialogAction
+              class="cursor-pointer rounded-xl bg-danger px-3.5 py-2 text-sm font-medium text-white transition-all hover:brightness-110 active:scale-[0.98]"
+              @click="confirmDelete"
+            >
+              Hapus dokumen
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialogRoot>
+  </section>
 </template>
