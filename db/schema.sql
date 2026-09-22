@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      VARCHAR(100) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     role          VARCHAR(20)  NOT NULL DEFAULT 'USER',
+    is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT users_role_check CHECK (role IN ('ADMIN', 'USER', 'READ_ONLY'))
 );
@@ -51,6 +52,22 @@ CREATE INDEX IF NOT EXISTS documents_embedding_idx
     ON documents USING hnsw (embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS documents_filename_idx ON documents (filename);
+
+CREATE TABLE IF NOT EXISTS activity_log (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT       REFERENCES users(id) ON DELETE SET NULL,
+    -- A deliberate snapshot: the row must still name who acted after the FK nulls out.
+    username   VARCHAR(100),
+    action     VARCHAR(50)  NOT NULL,
+    target     TEXT,
+    -- Metadata only -- tool used, duration, chunk count, message length. Never
+    -- message text: see SP2 Decision 3.
+    detail     JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS activity_log_created_idx ON activity_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS activity_log_action_idx ON activity_log (action, created_at DESC);
 
 -- Application role: full DML on every table.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_app;
