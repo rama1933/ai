@@ -7,6 +7,7 @@ from database import get_db
 from models import ChatSession, User
 from schemas import SessionPatch, SessionSummary
 from security import get_current_user, require_owned_session
+from services import audit
 
 router = APIRouter(tags=["sessions"])
 
@@ -66,3 +67,4 @@ def delete_session(
     session = require_owned_session(db, session_id, user)
     db.delete(session)
     db.flush()
+    audit.record(db, audit.SESSION_DELETE, user=user, target=session_id)

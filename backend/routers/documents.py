@@ -9,6 +9,7 @@ from models import User
 from schemas import IngestResponse
 from security import get_current_user
 from services.document_service import IngestError, ingest_file
+from services import audit
 from services.embedding_service import EmbeddingError
 from services.upload_service import UploadRejected, save_upload
 
@@ -33,4 +34,5 @@ def ingest_document(
     except EmbeddingError as exc:
         raise HTTPException(status_code=503, detail=f"local embedding model unavailable: {exc}") from exc
 
+    audit.record(db, audit.DOC_INGEST, user=user, target=stored_path.name, chunks=chunks)
     return IngestResponse(filename=stored_path.name, chunks=chunks)

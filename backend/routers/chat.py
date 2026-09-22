@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from database import SessionLocal, get_db
 from models import ChatHistory, User
 from schemas import ChatRequest, ChatResponse, HistoryItem, StreamChatRequest
 from security import get_current_user, get_or_create_session, require_owned_session
+from services import audit
 from services.upload_service import UploadRejected, display_name_of, sniff
 
 router = APIRouter(tags=["chat"])
@@ -182,6 +184,7 @@ def chat(
     resolved, history, _, session_docs = _prepare_turn(db, payload, user)
     image_paths = [r.path for r in resolved if r.kind == "image"]
 
+    started = time.monotonic()
     try:
         result = run_agent(
             db=db, message=payload.message, history=history, image_paths=image_paths, document_filenames=session_docs
@@ -190,6 +193,16 @@ def chat(
         raise HTTPException(status_code=503, detail=f"local LLM unavailable: {exc}") from exc
 
     db.add(ChatHistory(session_id=payload.session_id, role="assistant", message=result.answer))
+    audit.record(
+        db,
+        audit.CHAT_TURN,
+        user=user,
+        target=payload.session_id,
+        tool_used=result.tool_used,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        chars_in=len(payload.message),
+        chars_out=len(result.answer),
+    )
 
     return ChatResponse(answer=result.answer, tool_used=result.tool_used, sources=result.sources)
 
@@ -226,6 +239,7 @@ def chat_stream(
         gen_db = SessionLocal()
         parts: list[str] = []
         persisted = False
+        started = time.monotonic()
         try:
             for event in stream_agent(
                 db=gen_db,
@@ -243,6 +257,19 @@ def chat_stream(
                     persisted = True
                     assistant_row = ChatHistory(session_id=session_id, role="assistant", message=event["answer"])
                     gen_db.add(assistant_row)
+                    # Same session, same commit as the answer: a turn and its audit row
+                    # are one unit, so neither can land without the other. A turn the
+                    # client aborted never reaches here and is not logged as completed.
+                    audit.record(
+                        gen_db,
+                        audit.CHAT_TURN,
+                        user=user,
+                        target=session_id,
+                        tool_used=event["tool_used"],
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        chars_in=len(message),
+                        chars_out=len(event["answer"]),
+                    )
                     gen_db.commit()  # expire_on_commit=False keeps the assigned id
                     # The client addresses this turn by row id for regenerate/edit.
                     event = {**event, "user_row_id": user_row_id, "assistant_row_id": assistant_row.id}
