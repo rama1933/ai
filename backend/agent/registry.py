@@ -144,6 +144,14 @@ def dispatch(
         hits = rag_search(db, query, top_k=6 if filenames else 4, filenames=filenames)
         if filenames and not hits:
             hits = first_chunks(db, filenames)
+            if not hits and widen:
+                # The scope names files the corpus no longer holds -- a session keeps its
+                # attachments in chat_history after the console deletes the document, and
+                # both the scoped search and the fallback then come back empty, refusing
+                # every later turn of that session for good. Nothing is left to read but
+                # the corpus. Not reached when the fallback DID return chunks: Review
+                # Focus 1, a vague "pelajari dokumen ini" must anchor to the session file.
+                hits = rag_search(db, query)
         elif filenames and widen:
             # A scope alone locked every session that ever carried a file out of
             # knowledge added later. Measured live: a new note scored 0.86 unscoped

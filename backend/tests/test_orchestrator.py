@@ -661,6 +661,44 @@ def test_an_answer_retrieval_did_not_supply_is_refused(monkeypatch):
     assert "Soekarno" not in "".join(e["text"] for e in events if e["type"] == "delta")
 
 
+def test_a_widened_scoped_turn_does_not_license_a_fabricated_answer(monkeypatch):
+    """Widening hands the model more evidence than the session's own file carried, and the
+    support check is the only thing between that evidence and an answer about something
+    else. Every other gate test runs unscoped, so none of them exercised the shape the
+    widen change creates; this one does, and the answer must still be refused."""
+    _mock_ollama(
+        monkeypatch,
+        [
+            _reply(tool_calls=[{"function": {"name": "rag_search", "arguments": {"query": "presiden"}}}]),
+            _reply(content="Ir. Soekarno adalah presiden pertama Indonesia."),
+        ],
+    )
+    monkeypatch.setattr(
+        registry, "dispatch",
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
+            text="[new-ktp.txt] pelayanan KTP hari Selasa di loket 3.\n\n"
+            "[abc-laporan.pdf] KEPUTUSAN BUPATI tentang redistribusi tanah pertanian.",
+            sources=[
+                SourceRef(filename="new-ktp.txt", score=0.86),
+                SourceRef(filename="abc-laporan.pdf", score=0.72),
+            ],
+        ),
+    )
+
+    events = list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Siapa presiden pertama Indonesia?",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+        )
+    )
+    done = events[-1]
+
+    assert done["answer"] == orchestrator.UNSUPPORTED_ANSWER
+    assert done["sources"] == [], "chips beside a refusal read as corroboration"
+
+
 def test_a_second_grounded_tool_does_not_disable_the_support_check(monkeypatch):
     """One grounded sql_query used to switch the check off for the whole turn, so a
     turn that ran both tools was waved through on the strength of the rows -- while the

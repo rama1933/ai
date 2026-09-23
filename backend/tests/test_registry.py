@@ -189,6 +189,50 @@ def test_dispatch_first_chunks_fallback_does_not_widen(monkeypatch):
     assert [s.filename for s in outcome.sources] == ["abc-laporan.pdf"]
 
 
+def test_dispatch_reaches_the_corpus_when_the_session_scope_has_nothing_left(monkeypatch):
+    """A session whose attachment was deleted from the knowledge page still names it in
+    chat_history, so the scoped search and its first_chunks fallback both come back empty
+    -- and every later turn of that session was refused for good, with the answer sitting
+    in the corpus. Reachable through the console's own delete button."""
+    calls = []
+
+    def fake_rag(db, query, top_k=4, filenames=None):
+        calls.append(filenames)
+        return [] if filenames else [RagHit(filename="new-ktp.txt", content="pelayanan KTP hari Selasa", score=0.86)]
+
+    monkeypatch.setattr(registry, "rag_search", fake_rag)
+    monkeypatch.setattr(registry, "first_chunks", lambda db, filenames, limit=4: [])
+
+    outcome = registry.dispatch(
+        "rag_search", {"query": "jadwal KTP"}, db=None,
+        image_paths=[], document_filenames=["deleted.pdf"],
+    )
+
+    assert calls == [["deleted.pdf"], None]
+    assert [s.filename for s in outcome.sources] == ["new-ktp.txt"]
+
+
+def test_dispatch_without_widen_keeps_a_dead_scope_dead(monkeypatch):
+    """The turn that attaches a file reads only that file, even when its scope is empty:
+    widening there is how a receipt answered a question about a freshly attached PDF."""
+    calls = []
+
+    def fake_rag(db, query, top_k=4, filenames=None):
+        calls.append(filenames)
+        return [] if filenames else [RagHit(filename="new-ktp.txt", content="pelayanan KTP hari Selasa", score=0.86)]
+
+    monkeypatch.setattr(registry, "rag_search", fake_rag)
+    monkeypatch.setattr(registry, "first_chunks", lambda db, filenames, limit=4: [])
+
+    outcome = registry.dispatch(
+        "rag_search", {"query": "jadwal KTP"}, db=None,
+        image_paths=[], document_filenames=["deleted.pdf"], widen=False,
+    )
+
+    assert calls == [["deleted.pdf"]]
+    assert outcome.grounded is False
+
+
 def test_image_ocr_keeps_the_extract_as_the_corpus_for_that_image(monkeypatch):
     """An image is readable only while it is attached -- the orchestrator hands OCR the
     paths of THIS message -- so the text has to outlive the turn.
