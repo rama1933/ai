@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useDebounceFn } from '@vueuse/core'
 import {
   AlertDialogAction,
   AlertDialogCancel,
@@ -61,6 +62,15 @@ async function load(): Promise<void> {
   } finally {
     isLoading.value = false
   }
+}
+
+// Typing filters as you go; Enter still short-circuits the wait.
+const loadSoon = useDebounceFn(load, 300)
+watch(query, () => loadSoon())
+
+function clearSearch(): void {
+  query.value = ''
+  void load()
 }
 
 function applyRow(updated: AdminUserItem): void {
@@ -147,12 +157,11 @@ onMounted(() => {
 
 <template>
   <section class="flex flex-col gap-4">
-    <form
-      class="flex flex-wrap items-end gap-2 rounded-2xl border border-border bg-surface p-4"
-      @submit.prevent="submitCreate"
-    >
-      <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="new-username">Username</label>
+    <form class="panel flex flex-wrap items-end gap-3 p-4" @submit.prevent="submitCreate">
+      <div class="flex min-w-[10rem] flex-1 flex-col gap-1">
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="new-username">
+          Username
+        </label>
         <input
           id="new-username"
           v-model="form.username"
@@ -160,12 +169,14 @@ onMounted(() => {
           minlength="3"
           maxlength="100"
           required
-          class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
+          class="field"
         />
       </div>
 
-      <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="new-password">Password</label>
+      <div class="flex min-w-[10rem] flex-1 flex-col gap-1">
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="new-password">
+          Password
+        </label>
         <input
           id="new-password"
           v-model="form.password"
@@ -173,55 +184,55 @@ onMounted(() => {
           minlength="8"
           maxlength="128"
           required
-          class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
+          class="field"
         />
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="new-role">Peran</label>
-        <select
-          id="new-role"
-          v-model="form.role"
-          class="cursor-pointer rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
-        >
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="new-role">Peran</label>
+        <select id="new-role" v-model="form.role" class="field cursor-pointer">
           <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
         </select>
       </div>
 
       <button
         type="submit"
-        class="cursor-pointer rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg shadow-glow transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        class="cursor-pointer rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg shadow-glow transition-all hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
         :disabled="!canCreate"
       >
         {{ creating ? 'Menambah…' : 'Tambah pengguna' }}
       </button>
 
-      <p v-if="formError" class="text-xs text-danger" role="alert">{{ formError }}</p>
+      <p v-if="formError" class="w-full text-xs text-danger" role="alert">{{ formError }}</p>
     </form>
 
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-[12rem] flex-1">
-        <AppIcon
-          name="search"
-          :size="14"
-          class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
-        />
-        <label class="sr-only" for="user-filter">Cari pengguna</label>
-        <input
-          id="user-filter"
-          v-model="query"
-          type="search"
-          placeholder="Cari username…"
-          class="w-full rounded-xl border border-border bg-surface py-2.5 pl-8 pr-3 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
-          @keydown.enter="load"
-        />
-      </div>
+    <!-- Filter and submit live in one control: a search field with a separate
+         "Cari" button beside it makes the operator travel to confirm what the
+         field already knows. -->
+    <div class="relative">
+      <AppIcon
+        name="search"
+        :size="15"
+        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
+      />
+      <label class="sr-only" for="user-filter">Cari pengguna</label>
+      <input
+        id="user-filter"
+        v-model="query"
+        type="search"
+        placeholder="Cari username…"
+        class="field pl-9 pr-9"
+        @keydown.enter="load"
+      />
       <button
+        v-if="query"
         type="button"
-        class="cursor-pointer rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
-        @click="load"
+        class="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 cursor-pointer place-items-center rounded-lg text-faint transition-colors hover:bg-elevated hover:text-fg"
+        aria-label="Bersihkan pencarian"
+        title="Bersihkan pencarian"
+        @click="clearSearch"
       >
-        Cari
+        <AppIcon name="close" :size="14" />
       </button>
     </div>
 
@@ -240,23 +251,23 @@ onMounted(() => {
       {{ error }}
     </p>
 
-    <div class="overflow-x-auto rounded-2xl border border-border bg-surface">
+    <div class="panel overflow-x-auto">
       <table class="w-full min-w-[48rem] border-collapse text-sm">
         <thead>
-          <tr class="border-b border-border text-left text-[11px] uppercase tracking-wider text-faint">
+          <tr class="table-head">
             <th class="px-4 py-3 font-semibold">Pengguna</th>
             <th class="px-4 py-3 font-semibold">Peran</th>
             <th class="px-4 py-3 font-semibold">Status</th>
-            <th class="px-4 py-3 font-semibold">Sesi</th>
-            <th class="px-4 py-3 font-semibold">Dokumen</th>
+            <th class="px-4 py-3 text-right font-semibold">Sesi</th>
+            <th class="px-4 py-3 text-right font-semibold">Dokumen</th>
             <th class="px-4 py-3 font-semibold">Dibuat</th>
             <th class="px-4 py-3 font-semibold"><span class="sr-only">Aksi</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="row.id" class="border-b border-border/60">
+          <tr v-for="row in rows" :key="row.id" class="table-row">
             <td class="px-4 py-3">
-              <span class="text-fg">{{ row.username }}</span>
+              <span class="font-medium text-fg">{{ row.username }}</span>
               <span v-if="isSelf(row)" class="ml-2 text-[11px] text-faint">(Anda)</span>
             </td>
             <td class="px-4 py-3">
@@ -266,26 +277,29 @@ onMounted(() => {
                 :value="row.role"
                 :disabled="isSelf(row)"
                 :title="isSelf(row) ? 'Anda tidak bisa mengubah peran Anda sendiri' : undefined"
-                class="cursor-pointer rounded-xl border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:border-primary/80 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                class="cursor-pointer rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs font-medium text-fg transition-colors focus:border-primary/80 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 @change="changeRole(row, $event)"
               >
                 <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
               </select>
             </td>
             <td class="px-4 py-3">
+              <!-- Active/inactive is the control, not a label: colour alone would
+                   read as a badge and hide that it is clickable. -->
               <button
                 type="button"
-                class="cursor-pointer rounded-lg px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                 :class="row.is_active ? 'bg-success/10 text-success' : 'bg-danger-soft text-danger'"
                 :disabled="isSelf(row)"
                 :title="isSelf(row) ? 'Anda tidak bisa menonaktifkan akun Anda sendiri' : undefined"
                 @click="toggleActive(row)"
               >
+                <span class="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true"></span>
                 {{ row.is_active ? 'Aktif' : 'Nonaktif' }}
               </button>
             </td>
-            <td class="px-4 py-3 text-subtle">{{ row.sessions }}</td>
-            <td class="px-4 py-3 text-subtle">{{ row.documents }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-subtle">{{ row.sessions }}</td>
+            <td class="px-4 py-3 text-right tabular-nums text-subtle">{{ row.documents }}</td>
             <td class="whitespace-nowrap px-4 py-3 text-subtle">{{ formatDate(row.created_at) }}</td>
             <td class="px-4 py-3 text-right">
               <button
@@ -303,9 +317,14 @@ onMounted(() => {
         </tbody>
       </table>
 
-      <p v-if="rows.length === 0" class="px-4 py-10 text-center text-sm text-faint">
-        {{ isLoading ? 'Memuat pengguna…' : 'Tidak ada pengguna yang cocok.' }}
-      </p>
+      <div v-if="rows.length === 0" class="flex flex-col items-center gap-2 px-4 py-14 text-center">
+        <div class="grid h-11 w-11 place-items-center rounded-xl bg-elevated text-faint" aria-hidden="true">
+          <AppIcon name="user" :size="20" />
+        </div>
+        <p class="text-sm text-subtle">
+          {{ isLoading ? 'Memuat pengguna…' : 'Tidak ada pengguna yang cocok.' }}
+        </p>
+      </div>
     </div>
 
     <AlertDialogRoot :open="deleteOpen" @update:open="(open) => (deleteOpen = open)">

@@ -12,7 +12,7 @@ import AppIcon from './AppIcon.vue'
 import AttachmentChip from './AttachmentChip.vue'
 import MessageActions from './MessageActions.vue'
 
-const props = defineProps<{ message: ChatMessage; index: number }>()
+const props = defineProps<{ message: ChatMessage; index: number; streaming?: boolean }>()
 const emit = defineEmits<{ regenerate: [index: number]; saveEdit: [index: number, text: string] }>()
 
 const { objectUrl } = useAttachments()
@@ -187,7 +187,7 @@ function shortName(filename: string): string {
         :class="isUser ? 'bg-primary text-primary-fg' : 'bg-surface text-fg ring-1 ring-border'"
         @click="onContentClick"
       >
-        <div class="md-body" v-html="rendered" />
+        <div class="md-body" :class="{ 'is-streaming': !isUser && props.streaming }" v-html="rendered" />
       </div>
       <div
         v-else
@@ -229,7 +229,14 @@ function shortName(filename: string): string {
         @edit="startEdit"
       />
 
-      <div v-if="tool || sources.length" class="flex flex-wrap items-center gap-1.5">
+      <!-- Lands a beat after the text: the tool and its sources are the answer's
+           provenance, and announcing them at the same instant as the first
+           character splits attention between the two. -->
+      <div
+        v-if="tool || sources.length"
+        class="flex animate-fade-up flex-wrap items-center gap-1.5"
+        style="animation-delay: 90ms"
+      >
         <span
           v-if="tool"
           class="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-2.5 py-1 text-[11px] font-medium text-fg"

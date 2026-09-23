@@ -7,10 +7,16 @@
  * tokens (bg-surface, text-subtle, border-border), never a raw colour, so
  * light and dark cannot drift apart. Dark values are desaturated tonal
  * variants, not inverted light values.
+ *
+ * Three planes carry the layout, lightest on top: rail (sidebar chrome) sits
+ * below bg (the page), which sits below surface (cards and the things you
+ * actually read). The gap is deliberately small — 1.09:1 in light — because it
+ * is separation, not decoration; the hairline border does the rest.
  */
 @layer base {
   :root {
     --c-bg: 250 249 254;
+    --c-rail: 241 238 250;
     --c-surface: 255 255 255;
     --c-elevated: 244 242 253;
     --c-fg: 30 27 75;
@@ -20,10 +26,10 @@
        table rules, hr, code-block frames) and is deliberately quiet.
        --c-border-strong is for boundaries that carry meaning — the outline of
        a control or of a discrete object — and must clear WCAG 1.4.11's 3:1
-       against every surface it can land on (bg 3.00, surface 3.15, elevated
-       2.79 — elevated only ever carries decorative rings, never a control). */
+       against every surface it can land on: bg 3.68, rail 3.37, surface 3.86,
+       elevated 3.48. Re-measure with those four if any plane moves. */
     --c-border: 226 221 250;
-    --c-border-strong: 148 130 237;
+    --c-border-strong: 133 112 229;
     --c-primary: 124 58 237;
     --c-primary-fg: 255 255 255;
     --c-primary-soft: 237 231 254;
@@ -39,13 +45,14 @@
 
   .dark {
     --c-bg: 15 13 23;
+    --c-rail: 20 18 29;
     --c-surface: 26 23 38;
     --c-elevated: 34 30 49;
     --c-fg: 236 234 246;
     --c-subtle: 180 175 204;
     --c-faint: 152 146 178;
     --c-border: 50 44 72;
-    --c-border-strong: 111 98 159;
+    --c-border-strong: 124 110 175;
     --c-primary: 167 139 250;
     --c-primary-fg: 26 20 48;
     --c-primary-soft: 42 36 64;
@@ -110,6 +117,42 @@
 }
 
 @layer components {
+  /* The two shapes every admin screen repeats: a raised panel for content, a
+     bordered well for a control. Named once here rather than copied as a
+     fifteen-class string into three views, where a single drifted value would
+     stop the screens matching. */
+  .panel {
+    @apply rounded-2xl border border-border bg-surface shadow-card;
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-border-strong bg-bg px-3 py-2 text-sm text-fg transition-colors placeholder:text-faint focus:border-primary/80 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* The caret is the "still writing" signal. It hangs off the last block of the
+     answer, so it tracks the text as the markdown is re-parsed on every delta,
+     and it is CSS content — nothing has to be injected into the sanitised HTML.
+     Under reduced motion the global block stops the blink; the bar itself stays
+     put, because "still writing" must not depend on an animation to be said.
+     `is-streaming` is spelled literally in MessageBubble's :class for a reason:
+     this rule lives in the components layer, which Tailwind tree-shakes against
+     the scanned source. Bind it through a variable and the caret disappears. */
+  .md-body.is-streaming:empty::after,
+  .md-body.is-streaming > *:last-child::after {
+    content: '';
+    @apply ml-0.5 inline-block h-[1.05em] w-[0.5ch] animate-caret rounded-[1px] bg-primary align-text-bottom;
+  }
+
+  /* Table chrome. Header row reads as a label band rather than as bold body
+     text, and rows answer the pointer so a wide table is scannable. */
+  .table-head {
+    @apply border-b border-border bg-elevated/70 text-left text-[11px] font-semibold uppercase tracking-wider text-subtle;
+  }
+
+  .table-row {
+    @apply border-b border-border/60 transition-colors last:border-0 hover:bg-elevated/40;
+  }
+
   /* Rendered markdown from the model. Hand-rolled instead of pulling in
      @tailwindcss/typography: this app needs six element styles, not a plugin. */
   .md-body {
@@ -259,6 +302,40 @@
   .md-body hr {
     @apply border-border;
   }
+}
+
+/*
+ * Vue <Transition> hooks for the two things that appear *over* the conversation
+ * rather than inside its flow: the jump-to-latest pill and the drop zone.
+ * Entering decelerates, leaving accelerates and runs shorter — the whole motion
+ * vocabulary is these two curves.
+ *
+ * Deliberately NOT in @layer components. Tailwind emits a components-layer rule
+ * only when it finds the class while scanning the source, and Vue builds these
+ * names at runtime from `name="pop"` — they appear in no template, so the layer
+ * would drop every one of them and the transitions would silently not run.
+ *
+ * Only transform and opacity are touched, so neither element can reflow the
+ * column underneath, and both are safe to transform because neither carries a
+ * transform of its own to be overwritten (the pill's -translate-x-1/2 centring
+ * sits on the button inside, which is a different element).
+ */
+.pop-enter-active {
+  transition-property: opacity, transform;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pop-leave-active {
+  transition-property: opacity, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
+}
+
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.96);
 }
 
 /* Nothing here is load-bearing: every animation is decoration on top of a

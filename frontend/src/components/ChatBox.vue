@@ -174,12 +174,15 @@ const canSend = computed(
             <h1 class="truncate font-display text-[0.9375rem] font-semibold tracking-tight text-fg">
               Agentic RAG Assistant
             </h1>
-            <p class="flex items-center gap-1.5 text-xs text-subtle">
-              <span class="relative flex h-1.5 w-1.5" aria-hidden="true">
+            <!-- Truncates rather than wraps: at 375px the status line is the only
+                 thing in the header that can grow a second row, and a two-line
+                 subtitle pushes the whole header out of shape. -->
+            <p class="flex min-w-0 items-center gap-1.5 text-xs text-subtle">
+              <span class="relative flex h-1.5 w-1.5 shrink-0" aria-hidden="true">
                 <span class="absolute inline-flex h-full w-full animate-ring-pulse rounded-full bg-success"></span>
                 <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-success"></span>
               </span>
-              llama3.2:3b · berjalan lokal
+              <span class="truncate">llama3.2:3b · berjalan lokal</span>
             </p>
           </div>
 
@@ -217,14 +220,24 @@ const canSend = computed(
             </p>
 
             <div class="mx-auto mt-6 flex max-w-lg flex-col gap-2">
+              <!-- Staggered so the three read as a list being offered rather than
+                   a block landing at once. 40ms apart, all settled inside 500ms. -->
               <button
-                v-for="suggestion in SUGGESTIONS"
+                v-for="(suggestion, i) in SUGGESTIONS"
                 :key="suggestion"
                 type="button"
-                class="cursor-pointer rounded-xl border border-border-strong bg-surface px-4 py-2.5 text-left text-sm text-subtle shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-primary/80 hover:text-fg hover:shadow-card"
+                class="group flex animate-fade-up cursor-pointer items-center gap-3 rounded-xl border border-border-strong bg-surface px-4 py-2.5 text-left text-sm text-subtle shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-primary/80 hover:text-fg hover:shadow-card"
+                :style="{ animationDelay: `${140 + i * 40}ms` }"
                 @click="useSuggestion(suggestion)"
               >
-                {{ suggestion }}
+                <span class="flex-1">{{ suggestion }}</span>
+                <!-- Occupies its space from the start, so revealing it on hover
+                     cannot shift the sentence it sits beside. -->
+                <AppIcon
+                  name="chevron"
+                  :size="14"
+                  class="shrink-0 -translate-x-1 text-primary opacity-0 transition-all duration-200 ease-enter group-hover:translate-x-0 group-hover:opacity-100"
+                />
               </button>
             </div>
           </div>
@@ -234,6 +247,7 @@ const canSend = computed(
             :key="index"
             :message="message"
             :index="index"
+            :streaming="isStreaming && index === messages.length - 1"
             @regenerate="regenerate"
             @save-edit="(i: number, text: string) => saveEdit(i, text)"
           />
@@ -263,24 +277,29 @@ const canSend = computed(
         </div>
       </main>
 
-      <!-- Appear when the reader scrolled away from the live conversation. -->
-      <div v-if="showPill" class="pointer-events-none relative">
-        <button
-          type="button"
-          class="pointer-events-auto absolute -top-14 left-1/2 grid h-9 w-9 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-border-strong bg-surface text-subtle shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:text-fg"
-          aria-label="Kembali ke pesan terbaru"
-          title="Ke pesan terbaru"
-          @click="scrollToBottom"
-        >
-          <AppIcon name="send" :size="16" class="rotate-180" />
-        </button>
-      </div>
+      <!-- Appear when the reader scrolled away from the live conversation. The
+           transition goes on this wrapper, not the button: the button carries a
+           -translate-x-1/2 of its own to centre itself, and the transition's
+           transform would overwrite it. -->
+      <Transition name="pop">
+        <div v-if="showPill" class="pointer-events-none relative">
+          <button
+            type="button"
+            class="pointer-events-auto absolute -top-14 left-1/2 grid h-9 w-9 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-border-strong bg-surface text-subtle shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:text-fg"
+            aria-label="Kembali ke pesan terbaru"
+            title="Ke pesan terbaru"
+            @click="scrollToBottom"
+          >
+            <AppIcon name="send" :size="16" class="rotate-180" />
+          </button>
+        </div>
+      </Transition>
 
       <footer class="border-t border-border bg-surface/80 backdrop-blur-md">
         <div class="mx-auto w-full max-w-3xl px-4 pb-4 pt-3 sm:px-6">
           <div
             v-if="error"
-            class="mb-2.5 flex items-start gap-2 rounded-xl bg-danger-soft px-3 py-2.5 text-xs text-danger ring-1 ring-danger/20"
+            class="mb-2.5 flex animate-fade-up items-start gap-2 rounded-xl bg-danger-soft px-3 py-2.5 text-xs text-danger ring-1 ring-danger/20"
             role="alert"
           >
             <AppIcon name="alert" :size="15" class="mt-px" />
@@ -303,20 +322,24 @@ const canSend = computed(
             @dragleave.prevent="dragging = false"
             @drop="onDrop"
           >
-            <div
-              v-if="dragging"
-              class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-primary-soft/80 backdrop-blur-sm"
-            >
-              <p class="flex items-center gap-2 text-sm font-medium text-fg">
-                <AppIcon name="paperclip" :size="16" />
-                Lepaskan untuk melampirkan
-              </p>
-            </div>
+            <Transition name="pop">
+              <div
+                v-if="dragging"
+                class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl bg-primary-soft/80 backdrop-blur-sm"
+              >
+                <p class="flex items-center gap-2 text-sm font-medium text-fg">
+                  <AppIcon name="paperclip" :size="16" />
+                  Lepaskan untuk melampirkan
+                </p>
+              </div>
+            </Transition>
 
             <div v-if="pending.length" class="mb-2.5 flex flex-wrap gap-2">
               <AttachmentChip
-                v-for="item in pending"
+                v-for="(item, i) in pending"
                 :key="item.id"
+                class="animate-fade-up"
+                :style="{ animationDelay: `${i * 40}ms` }"
                 :name="item.displayName"
                 :kind="item.mime.startsWith('image/') ? 'image' : 'document'"
                 :mime="item.mime"
@@ -329,8 +352,11 @@ const canSend = computed(
               />
             </div>
 
+            <!-- Focus is drawn once, around the whole composer. Left to itself the
+                 textarea would take the global focus ring too, nesting a second
+                 box inside the first. -->
             <div
-              class="flex items-end gap-1.5 rounded-2xl border border-border-strong bg-surface p-1.5 shadow-card transition-colors focus-within:border-primary/80"
+              class="flex items-end gap-1.5 rounded-2xl border border-border-strong bg-surface p-1.5 shadow-card transition-[color,box-shadow] focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30"
             >
               <UploadButton :disabled="isLoading || isStreaming" @files="attach" />
 
@@ -341,14 +367,14 @@ const canSend = computed(
                 v-model="input"
                 rows="1"
                 placeholder="Tulis pertanyaan…"
-                class="max-h-40 flex-1 resize-none self-center bg-transparent px-1 py-2 text-[0.9375rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
+                class="max-h-40 flex-1 resize-none self-center bg-transparent px-1 py-2 text-[0.9375rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                 @keydown="onKeydown"
                 @paste="onPaste"
               ></textarea>
 
               <button
                 type="button"
-                class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
+                class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-primary text-primary-fg shadow-glow transition-all duration-200 ease-enter hover:scale-105 hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:scale-100 disabled:hover:brightness-100"
                 :class="isStreaming ? 'bg-danger shadow-none' : ''"
                 :disabled="isStreaming ? false : !canSend"
                 :aria-label="isStreaming ? 'Hentikan jawaban' : 'Kirim pesan'"

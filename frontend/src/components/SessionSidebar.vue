@@ -80,7 +80,7 @@ async function onConfirmDelete(): Promise<void> {
   <!-- Rail: the permanent column, >= lg. -->
   <aside
     v-if="props.variant === 'rail'"
-    class="hidden w-72 shrink-0 flex-col border-r border-border bg-surface lg:flex"
+    class="hidden w-72 shrink-0 flex-col border-r border-border bg-rail lg:flex"
   >
     <SessionSidebarBody
       @new="onNew"
@@ -96,7 +96,7 @@ async function onConfirmDelete(): Promise<void> {
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" />
       <DialogContent
-        class="fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col border-r border-border bg-surface shadow-2xl focus:outline-none"
+        class="fixed inset-y-0 left-0 z-50 flex w-80 max-w-[85vw] flex-col border-r border-border bg-rail shadow-2xl focus:outline-none"
       >
         <DialogTitle class="sr-only">Daftar percakapan</DialogTitle>
         <DialogDescription class="sr-only">Pilih, ganti nama, atau hapus percakapan Anda.</DialogDescription>

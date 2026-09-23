@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { useAuth } from '../../composables/useAuth'
 import { useView, type View } from '../../composables/useView'
@@ -24,6 +24,25 @@ const TABS: { view: View; label: string; icon: 'database' | 'history' | 'user' }
   { view: 'admin/logs', label: 'Log Aktivitas', icon: 'history' },
   { view: 'admin/users', label: 'Pengguna', icon: 'user' },
 ]
+
+/** Each screen says what it is for. A console that only names its tables makes
+ * the operator read the columns to work out which one they are on. */
+const PAGES: Record<string, { title: string; blurb: string }> = {
+  'admin/knowledge': {
+    title: 'Data Training',
+    blurb: 'Berkas, teks, dan halaman web yang jadi sumber jawaban asisten.',
+  },
+  'admin/logs': {
+    title: 'Log Aktivitas',
+    blurb: 'Metadata kejadian: masuk, pengindeksan, percakapan, dan tindakan admin.',
+  },
+  'admin/users': {
+    title: 'Pengguna',
+    blurb: 'Siapa yang boleh memakai sistem, dan seberapa banyak yang mereka pakai.',
+  },
+}
+
+const page = computed(() => PAGES[view.value] ?? { title: 'Konsol Admin', blurb: '' })
 
 const stats = ref<AdminStats | null>(null)
 const statsError = ref<string | null>(null)
@@ -125,13 +144,20 @@ function onSidebarNavigate(): void {
           </button>
         </div>
 
-        <nav class="mx-auto flex w-full max-w-5xl gap-1 overflow-x-auto px-4 pb-2 sm:px-6" aria-label="Menu admin">
+        <!-- Below lg only. From lg up the same three links sit in the rail, and
+             two navigations for one set of screens reads as two places to be. -->
+        <nav
+          class="mx-auto flex w-full max-w-5xl gap-1 overflow-x-auto px-4 pb-2 sm:px-6 lg:hidden"
+          aria-label="Menu admin"
+        >
           <button
             v-for="tab in TABS"
             :key="tab.view"
             type="button"
             class="flex shrink-0 cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors duration-150"
-            :class="view === tab.view ? 'bg-elevated text-fg' : 'text-subtle hover:bg-elevated/60'"
+            :class="
+              view === tab.view ? 'bg-elevated text-fg shadow-sm ring-1 ring-border' : 'text-subtle hover:text-fg'
+            "
             :aria-current="view === tab.view ? 'page' : undefined"
             @click="go(tab.view)"
           >
@@ -143,6 +169,10 @@ function onSidebarNavigate(): void {
 
       <main class="flex-1 overflow-y-auto overscroll-contain">
         <div class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+          <div class="mb-5 flex flex-col gap-1">
+            <h2 class="font-display text-lg font-semibold tracking-tight text-fg">{{ page.title }}</h2>
+            <p class="text-sm leading-relaxed text-subtle">{{ page.blurb }}</p>
+          </div>
           <slot />
         </div>
       </main>

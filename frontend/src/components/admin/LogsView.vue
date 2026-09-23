@@ -137,14 +137,10 @@ watch([action, since, until], applyFilters)
 
 <template>
   <section class="flex flex-col gap-4">
-    <form class="flex flex-wrap items-end gap-2" @submit.prevent="applyFilters">
+    <form class="panel flex flex-wrap items-end gap-3 p-4" @submit.prevent="applyFilters">
       <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="log-action">Aksi</label>
-        <select
-          id="log-action"
-          v-model="action"
-          class="cursor-pointer rounded-xl border border-border bg-surface px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
-        >
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="log-action">Aksi</label>
+        <select id="log-action" v-model="action" class="field cursor-pointer">
           <option value="">Semua aksi</option>
           <option v-for="name in actions" :key="name" :value="name">{{ name }}</option>
         </select>
@@ -154,58 +150,45 @@ watch([action, since, until], applyFilters)
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="log-user">Pengguna</label>
-        <input
-          id="log-user"
-          v-model="username"
-          type="search"
-          placeholder="username"
-          class="rounded-xl border border-border bg-surface px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
-        />
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="log-user">Pengguna</label>
+        <input id="log-user" v-model="username" type="search" placeholder="username" class="field" />
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="log-since">Dari</label>
-        <input
-          id="log-since"
-          v-model="since"
-          type="date"
-          class="rounded-xl border border-border bg-surface px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
-        />
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="log-since">Dari</label>
+        <input id="log-since" v-model="since" type="date" class="field" />
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[11px] font-semibold uppercase tracking-wider text-faint" for="log-until">Sampai</label>
-        <input
-          id="log-until"
-          v-model="until"
-          type="date"
-          class="rounded-xl border border-border bg-surface px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
-        />
+        <label class="text-[11px] font-semibold uppercase tracking-wider text-subtle" for="log-until">Sampai</label>
+        <input id="log-until" v-model="until" type="date" class="field" />
       </div>
 
-      <button
-        type="submit"
-        class="cursor-pointer rounded-xl border border-border-strong bg-elevated px-3.5 py-2 text-sm font-medium text-fg transition-colors hover:border-primary/80"
-      >
-        Terapkan
-      </button>
-      <button
-        type="button"
-        class="cursor-pointer rounded-xl px-3 py-2 text-sm text-subtle transition-colors hover:bg-elevated hover:text-fg"
-        @click="resetFilters"
-      >
-        Reset
-      </button>
-
-      <button
-        type="button"
-        class="ml-auto flex cursor-pointer items-center gap-1.5 rounded-xl border border-danger/40 px-3 py-2 text-sm text-danger transition-colors hover:bg-danger-soft"
-        @click="requestPurge"
-      >
-        <AppIcon name="trash" :size="14" />
-        Bersihkan log lama
-      </button>
+      <!-- Pushed apart from the filters: wiping history is not a filter, and it
+           should not sit one slip of the mouse away from "Terapkan". -->
+      <div class="flex w-full items-center justify-end gap-2 sm:ml-auto sm:w-auto">
+        <button
+          type="button"
+          class="cursor-pointer rounded-xl px-3 py-2 text-sm text-subtle transition-colors hover:bg-elevated hover:text-fg"
+          @click="resetFilters"
+        >
+          Reset
+        </button>
+        <button
+          type="submit"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm font-medium text-fg transition-colors hover:border-primary/80 hover:text-primary"
+        >
+          Terapkan
+        </button>
+        <button
+          type="button"
+          class="flex cursor-pointer items-center gap-1.5 rounded-xl border border-danger/40 px-3 py-2 text-sm text-danger transition-colors hover:bg-danger-soft"
+          @click="requestPurge"
+        >
+          <AppIcon name="trash" :size="14" />
+          Bersihkan log lama
+        </button>
+      </div>
     </form>
 
     <p
@@ -223,10 +206,10 @@ watch([action, since, until], applyFilters)
       {{ error }}
     </p>
 
-    <div class="overflow-x-auto rounded-2xl border border-border bg-surface">
+    <div class="panel overflow-x-auto">
       <table class="w-full min-w-[52rem] border-collapse text-sm">
         <thead>
-          <tr class="border-b border-border text-left text-[11px] uppercase tracking-wider text-faint">
+          <tr class="table-head">
             <th class="px-4 py-3 font-semibold">Waktu</th>
             <th class="px-4 py-3 font-semibold">Pengguna</th>
             <th class="px-4 py-3 font-semibold">Aksi</th>
@@ -235,23 +218,28 @@ watch([action, since, until], applyFilters)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="row.id" class="border-b border-border/60 align-top">
-            <td class="whitespace-nowrap px-4 py-3 text-subtle">{{ formatDate(row.created_at) }}</td>
-            <td class="px-4 py-3 text-fg">{{ row.username ?? '—' }}</td>
+          <tr v-for="row in rows" :key="row.id" class="table-row align-top">
+            <td class="whitespace-nowrap px-4 py-3 tabular-nums text-subtle">{{ formatDate(row.created_at) }}</td>
+            <td class="px-4 py-3 font-medium text-fg">{{ row.username ?? '—' }}</td>
             <td class="px-4 py-3">
-              <span class="rounded-lg bg-elevated px-2 py-0.5 font-mono text-[11px] text-subtle">
+              <span class="rounded-lg bg-primary-soft px-2 py-0.5 font-mono text-[11px] font-medium text-fg">
                 {{ row.action }}
               </span>
             </td>
-            <td class="max-w-[16rem] px-4 py-3">
-              <span class="block break-all text-xs text-subtle">{{ row.target ?? '—' }}</span>
+            <!-- Two lines, then ellipsis: a stored filename or a session UUID is
+                 long enough to push the Detail column off the screen, and the
+                 whole value is one hover away. -->
+            <td class="max-w-[14rem] px-4 py-3">
+              <span class="line-clamp-2 break-all font-mono text-xs text-subtle" :title="row.target ?? undefined">
+                {{ row.target ?? '—' }}
+              </span>
             </td>
             <td class="px-4 py-3">
               <ul class="flex flex-wrap gap-1.5">
                 <li
                   v-for="(value, key) in row.detail"
                   :key="key"
-                  class="rounded-lg border border-border bg-bg px-2 py-0.5 text-[11px] text-subtle"
+                  class="rounded-lg border border-border bg-bg px-2 py-0.5 text-[11px]"
                 >
                   <span class="text-faint">{{ key }}</span>
                   <span class="ml-1 font-medium text-fg">{{ formatDetail(value) }}</span>
@@ -262,9 +250,12 @@ watch([action, since, until], applyFilters)
         </tbody>
       </table>
 
-      <p v-if="rows.length === 0" class="px-4 py-10 text-center text-sm text-faint">
-        {{ isLoading ? 'Memuat log…' : 'Tidak ada catatan yang cocok.' }}
-      </p>
+      <div v-if="rows.length === 0" class="flex flex-col items-center gap-2 px-4 py-14 text-center">
+        <div class="grid h-11 w-11 place-items-center rounded-xl bg-elevated text-faint" aria-hidden="true">
+          <AppIcon name="history" :size="20" />
+        </div>
+        <p class="text-sm text-subtle">{{ isLoading ? 'Memuat log…' : 'Tidak ada catatan yang cocok.' }}</p>
+      </div>
     </div>
 
     <div class="flex items-center justify-between gap-3">
@@ -274,7 +265,7 @@ watch([action, since, until], applyFilters)
       <div class="flex gap-2">
         <button
           type="button"
-          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs font-medium text-subtle transition-colors hover:border-primary/80 hover:text-fg disabled:cursor-not-allowed disabled:border-border disabled:opacity-40 disabled:hover:text-subtle"
           :disabled="!hasPrevious"
           @click="move(-PAGE_SIZE)"
         >
@@ -282,7 +273,7 @@ watch([action, since, until], applyFilters)
         </button>
         <button
           type="button"
-          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs font-medium text-subtle transition-colors hover:border-primary/80 hover:text-fg disabled:cursor-not-allowed disabled:border-border disabled:opacity-40 disabled:hover:text-subtle"
           :disabled="!hasNext"
           @click="move(PAGE_SIZE)"
         >
@@ -303,15 +294,10 @@ watch([action, since, until], applyFilters)
             seluruh log — tanggalnya wajib diisi.
           </AlertDialogDescription>
 
-          <label class="mt-3 block text-[11px] font-semibold uppercase tracking-wider text-faint" for="purge-before">
+          <label class="mt-3 block text-[11px] font-semibold uppercase tracking-wider text-subtle" for="purge-before">
             Hapus yang lebih tua dari
           </label>
-          <input
-            id="purge-before"
-            v-model="purgeBefore"
-            type="date"
-            class="mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg focus:border-primary/80 focus:outline-none"
-          />
+          <input id="purge-before" v-model="purgeBefore" type="date" class="field mt-1" />
 
           <div class="mt-4 flex justify-end gap-2">
             <AlertDialogCancel

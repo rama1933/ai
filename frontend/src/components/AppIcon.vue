@@ -36,6 +36,7 @@ withDefaults(
       | 'database'
       | 'history'
       | 'link'
+      | 'chevron'
     size?: number
   }>(),
   { size: 18 },
@@ -181,6 +182,12 @@ withDefaults(
       <ellipse cx="12" cy="5.5" rx="7.5" ry="2.5" />
       <path d="M4.5 5.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6" />
       <path d="M4.5 11.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6" />
+    </template>
+
+    <!-- Points right; callers rotate it into the down position when expanded,
+         which is the affordance a disclosure row is expected to carry. -->
+    <template v-else-if="name === 'chevron'">
+      <path d="M9 6l6 6-6 6" />
     </template>
 
     <template v-else-if="name === 'history'">

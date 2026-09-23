@@ -59,11 +59,19 @@ async function submit(): Promise<void> {
 
 <template>
   <div class="relative flex min-h-dvh items-center justify-center bg-bg px-4 py-10">
+    <!-- Two off-screen colour fields give the page depth without an image. They
+         are decoration on a flat ground, so they are hidden from the a11y tree
+         and never carry meaning. -->
+    <div class="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+      <div class="absolute -top-56 left-1/2 h-80 w-[42rem] -translate-x-1/2 rounded-full bg-primary/15 blur-3xl"></div>
+      <div class="absolute -bottom-56 right-[12%] h-72 w-72 rounded-full bg-accent-strong/10 blur-3xl"></div>
+    </div>
+
     <div class="absolute right-3 top-3">
       <ThemeToggle />
     </div>
 
-    <div class="w-full max-w-sm animate-fade-up">
+    <div class="relative w-full max-w-sm animate-fade-up">
       <div class="mb-6 text-center">
         <div
           class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent-strong text-primary-fg shadow-glow"
@@ -79,11 +87,7 @@ async function submit(): Promise<void> {
         </p>
       </div>
 
-      <form
-        class="space-y-4 rounded-2xl border border-border bg-surface p-5 shadow-card"
-        novalidate
-        @submit.prevent="submit"
-      >
+      <form class="panel space-y-4 p-5" novalidate @submit.prevent="submit">
         <div>
           <label for="username" class="mb-1.5 block text-xs font-medium text-subtle">Username</label>
           <input
@@ -94,7 +98,7 @@ async function submit(): Promise<void> {
             autocapitalize="none"
             spellcheck="false"
             placeholder="mis. budi"
-            class="h-11 w-full rounded-xl border border-border-strong bg-bg px-3 text-sm text-fg transition-colors placeholder:text-faint focus:border-primary/80 focus:outline-none"
+            class="field h-11 py-0"
             :aria-invalid="error !== null"
           />
         </div>
@@ -108,7 +112,7 @@ async function submit(): Promise<void> {
               :type="showPassword ? 'text' : 'password'"
               :autocomplete="isRegistering ? 'new-password' : 'current-password'"
               placeholder="minimal 8 karakter"
-              class="h-11 w-full rounded-xl border border-border-strong bg-bg pl-3 pr-11 text-sm text-fg transition-colors placeholder:text-faint focus:border-primary/80 focus:outline-none"
+              class="field h-11 py-0 pr-11"
               :aria-invalid="error !== null"
             />
             <button
@@ -146,7 +150,7 @@ async function submit(): Promise<void> {
 
         <button
           type="submit"
-          class="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary text-sm font-medium text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
+          class="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
           :disabled="!canSubmit"
         >
           <span

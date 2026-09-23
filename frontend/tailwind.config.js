@@ -11,6 +11,11 @@ export default {
       // stay in sync: the CSS variables in style.css carry the two palettes.
       colors: {
         bg: 'rgb(var(--c-bg) / <alpha-value>)',
+        // The sidebar plane. Deliberately a third value rather than a reuse of
+        // `surface` or `elevated`: the rail has to be distinguishable from the
+        // content behind it *and* leave `elevated` free to mean "hovered" inside
+        // the rail, which it cannot do if the rail is already painted elevated.
+        rail: 'rgb(var(--c-rail) / <alpha-value>)',
         surface: 'rgb(var(--c-surface) / <alpha-value>)',
         elevated: 'rgb(var(--c-elevated) / <alpha-value>)',
         fg: 'rgb(var(--c-fg) / <alpha-value>)',
@@ -74,6 +79,15 @@ export default {
       borderRadius: {
         bubble: '1.125rem',
       },
+      // Two curves and only two. `enter` is the decelerating one — fast off the
+      // mark, settled at the end — so anything arriving feels like it was
+      // already moving. `exit` accelerates away, which reads as quicker than
+      // the same duration played backwards. Named so a component cannot invent
+      // a fourth rhythm of its own.
+      transitionTimingFunction: {
+        enter: 'cubic-bezier(0.16, 1, 0.3, 1)',
+        exit: 'cubic-bezier(0.4, 0, 1, 1)',
+      },
       boxShadow: {
         card: '0 1px 2px rgb(var(--c-shadow) / 0.04), 0 8px 24px -12px rgb(var(--c-shadow) / 0.12)',
         pop: '0 8px 32px -8px rgb(var(--c-shadow) / 0.18)',
@@ -93,11 +107,18 @@ export default {
           '70%': { transform: 'scale(1.9)', opacity: '0' },
           '100%': { transform: 'scale(1.9)', opacity: '0' },
         },
+        // The only continuous animations in the app, both loaders: the
+        // composing dots and the caret that says the answer is still arriving.
+        caret: {
+          '0%, 45%': { opacity: '1' },
+          '55%, 100%': { opacity: '0' },
+        },
       },
       animation: {
         'fade-up': 'fade-up 220ms cubic-bezier(0.16, 1, 0.3, 1) both',
         'dot-pulse': 'dot-pulse 1.2s ease-in-out infinite',
         'ring-pulse': 'ring-pulse 2s cubic-bezier(0.16, 1, 0.3, 1) infinite',
+        caret: 'caret 1s ease-in-out infinite',
       },
     },
   },

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useDebounceFn } from '@vueuse/core'
 import {
   AlertDialogAction,
   AlertDialogCancel,
@@ -90,6 +91,23 @@ async function load(): Promise<void> {
 function search(): void {
   offset.value = 0
   void load()
+}
+
+// Typing filters as you go; Enter still short-circuits the wait. Debounced so a
+// fast typist costs one query, not one per keystroke.
+const searchSoon = useDebounceFn(search, 300)
+watch(query, () => searchSoon())
+
+function clearSearch(): void {
+  query.value = ''
+  search()
+}
+
+/** Stored names carry a 32-hex uniqueness prefix the operator does not need;
+ * it is shown only when it is the whole story, i.e. when it differs from the
+ * name the uploader gave. */
+function storedName(filename: string): string {
+  return filename.replace(/^[0-9a-f]{32}-/, '')
 }
 
 function move(delta: number): void {
@@ -207,10 +225,13 @@ onMounted(() => {
 <template>
   <section class="flex flex-col gap-4">
     <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-[12rem] flex-1">
+      <!-- Filter and submit live in one control: a search field with a separate
+           "Cari" button beside it makes the operator travel to confirm what the
+           field already knows. -->
+      <div class="relative min-w-[14rem] flex-1">
         <AppIcon
           name="search"
-          :size="14"
+          :size="15"
           class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
         />
         <label class="sr-only" for="knowledge-search">Cari dokumen</label>
@@ -219,21 +240,47 @@ onMounted(() => {
           v-model="query"
           type="search"
           placeholder="Cari nama berkas…"
-          class="w-full rounded-xl border border-border bg-surface py-2.5 pl-8 pr-3 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+          class="field pl-9 pr-9"
           @keydown.enter="search"
         />
+        <button
+          v-if="query"
+          type="button"
+          class="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 cursor-pointer place-items-center rounded-lg text-faint transition-colors hover:bg-elevated hover:text-fg"
+          aria-label="Bersihkan pencarian"
+          title="Bersihkan pencarian"
+          @click="clearSearch"
+        >
+          <AppIcon name="close" :size="14" />
+        </button>
       </div>
 
       <button
         type="button"
-        class="cursor-pointer rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
-        @click="search"
+        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm font-medium text-fg transition-colors hover:border-primary/80 hover:text-primary"
+        :class="panel === 'text' ? 'border-primary/80 text-primary' : ''"
+        :aria-expanded="panel === 'text'"
+        aria-controls="knowledge-text-panel"
+        @click="openPanel('text')"
       >
-        Cari
+        <AppIcon name="pencil" :size="15" />
+        Tempel teks
+      </button>
+
+      <button
+        type="button"
+        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-surface px-3.5 py-2 text-sm font-medium text-fg transition-colors hover:border-primary/80 hover:text-primary"
+        :class="panel === 'url' ? 'border-primary/80 text-primary' : ''"
+        :aria-expanded="panel === 'url'"
+        aria-controls="knowledge-url-panel"
+        @click="openPanel('url')"
+      >
+        <AppIcon name="link" :size="15" />
+        Dari URL
       </button>
 
       <label
-        class="flex cursor-pointer items-center gap-2 rounded-xl bg-primary px-3.5 py-2.5 text-sm font-medium text-primary-fg shadow-glow transition-all hover:brightness-110"
+        class="ml-auto flex cursor-pointer items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-sm font-medium text-primary-fg shadow-glow transition-all hover:brightness-110 active:scale-[0.99]"
         :class="uploading ? 'pointer-events-none opacity-60' : ''"
       >
         <AppIcon name="plus" :size="15" />
@@ -249,36 +296,12 @@ onMounted(() => {
           @change="onFileChosen"
         />
       </label>
-
-      <button
-        type="button"
-        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
-        :class="panel === 'text' ? 'border-primary/80 text-primary' : ''"
-        :aria-expanded="panel === 'text'"
-        aria-controls="knowledge-text-panel"
-        @click="openPanel('text')"
-      >
-        <AppIcon name="pencil" :size="15" />
-        Tempel teks
-      </button>
-
-      <button
-        type="button"
-        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/80"
-        :class="panel === 'url' ? 'border-primary/80 text-primary' : ''"
-        :aria-expanded="panel === 'url'"
-        aria-controls="knowledge-url-panel"
-        @click="openPanel('url')"
-      >
-        <AppIcon name="link" :size="15" />
-        Dari URL
-      </button>
     </div>
 
     <form
       v-if="panel === 'text'"
       id="knowledge-text-panel"
-      class="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-3"
+      class="panel flex flex-col gap-3 p-4"
       @submit.prevent="submitText"
     >
       <label class="text-xs font-medium text-subtle" for="knowledge-text-title">Judul (opsional)</label>
@@ -288,7 +311,7 @@ onMounted(() => {
         type="text"
         maxlength="200"
         placeholder="mis. Kebijakan cuti tahunan"
-        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+        class="field"
       />
       <label class="text-xs font-medium text-subtle" for="knowledge-text-body">Isi</label>
       <textarea
@@ -296,7 +319,7 @@ onMounted(() => {
         v-model="draftText"
         rows="8"
         placeholder="Tempel teks yang harus diketahui asisten…"
-        class="resize-y rounded-xl border border-border bg-bg px-3 py-2 text-sm leading-relaxed text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+        class="field resize-y leading-relaxed"
       />
       <div class="flex justify-end gap-2">
         <button
@@ -319,7 +342,7 @@ onMounted(() => {
     <form
       v-if="panel === 'url'"
       id="knowledge-url-panel"
-      class="flex flex-col gap-2 rounded-2xl border border-border bg-surface p-3"
+      class="panel flex flex-col gap-3 p-4"
       @submit.prevent="submitUrl"
     >
       <label class="text-xs font-medium text-subtle" for="knowledge-url">Alamat halaman</label>
@@ -329,7 +352,7 @@ onMounted(() => {
         type="url"
         required
         placeholder="https://contoh.id/kebijakan-cuti"
-        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+        class="field"
       />
       <label class="text-xs font-medium text-subtle" for="knowledge-url-title">Judul (opsional)</label>
       <input
@@ -338,7 +361,7 @@ onMounted(() => {
         type="text"
         maxlength="200"
         placeholder="Kosongkan untuk memakai nama dari URL"
-        class="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+        class="field"
       />
       <p class="text-[11px] leading-relaxed text-faint">
         Halaman diambil sekali oleh server lalu disimpan sebagai teks, jadi isinya tidak berubah
@@ -377,13 +400,13 @@ onMounted(() => {
       {{ error }}
     </p>
 
-    <div class="overflow-x-auto rounded-2xl border border-border bg-surface">
+    <div class="panel overflow-x-auto">
       <table class="w-full min-w-[44rem] border-collapse text-sm">
         <thead>
-          <tr class="border-b border-border text-left text-[11px] uppercase tracking-wider text-faint">
+          <tr class="table-head">
             <th class="px-4 py-3 font-semibold">Dokumen</th>
-            <th class="px-4 py-3 font-semibold">Chunk</th>
-            <th class="px-4 py-3 font-semibold">Karakter</th>
+            <th class="px-4 py-3 text-right font-semibold">Chunk</th>
+            <th class="px-4 py-3 text-right font-semibold">Karakter</th>
             <th class="px-4 py-3 font-semibold">Pemilik</th>
             <th class="px-4 py-3 font-semibold">Diunggah</th>
             <th class="px-4 py-3 font-semibold"><span class="sr-only">Aksi</span></th>
@@ -391,25 +414,33 @@ onMounted(() => {
         </thead>
         <tbody>
           <template v-for="row in rows" :key="row.filename">
-            <tr class="border-b border-border/60 align-top">
-              <td class="max-w-[20rem] px-4 py-3">
+            <tr class="table-row align-top">
+              <td class="max-w-[22rem] px-4 py-3">
                 <button
                   type="button"
-                  class="flex cursor-pointer items-start gap-2 text-left text-fg transition-colors hover:text-primary"
+                  class="group/doc flex cursor-pointer items-start gap-2 text-left text-fg transition-colors hover:text-primary"
                   :aria-expanded="expandedFilename === row.filename"
                   @click="toggleChunks(row)"
                 >
                   <AppIcon
-                    :name="expandedFilename === row.filename ? 'eye-off' : 'eye'"
+                    name="chevron"
                     :size="14"
-                    class="mt-0.5 text-faint"
+                    class="mt-1 text-faint transition-transform duration-200"
+                    :class="expandedFilename === row.filename ? 'rotate-90 text-primary' : ''"
                   />
-                  <span class="break-all">{{ row.display_name }}</span>
+                  <span class="min-w-0">
+                    <span class="block break-all font-medium">{{ row.display_name }}</span>
+                    <span
+                      v-if="storedName(row.filename) !== row.display_name"
+                      class="mt-0.5 block break-all font-mono text-[11px] text-faint"
+                    >
+                      {{ storedName(row.filename) }}
+                    </span>
+                  </span>
                 </button>
-                <p class="mt-1 break-all pl-6 text-[11px] text-faint">{{ row.filename }}</p>
               </td>
-              <td class="px-4 py-3 text-subtle">{{ formatNumber(row.chunks) }}</td>
-              <td class="px-4 py-3 text-subtle">{{ formatNumber(row.chars) }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-subtle">{{ formatNumber(row.chunks) }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-subtle">{{ formatNumber(row.chars) }}</td>
               <td class="px-4 py-3 text-subtle">{{ row.owner ?? '—' }}</td>
               <td class="whitespace-nowrap px-4 py-3 text-subtle">{{ formatDate(row.created_at) }}</td>
               <td class="px-4 py-3 text-right">
@@ -426,15 +457,11 @@ onMounted(() => {
             </tr>
 
             <tr v-if="expandedFilename === row.filename" class="border-b border-border/60 bg-bg">
-              <td colspan="6" class="px-4 py-3">
+              <td colspan="6" class="px-4 py-4">
                 <p v-if="isLoadingChunks" class="text-xs text-faint">Memuat chunk…</p>
                 <ol v-else class="flex flex-col gap-2">
-                  <li
-                    v-for="chunk in chunks"
-                    :key="chunk.chunk_index"
-                    class="rounded-xl border border-border bg-surface p-3"
-                  >
-                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                  <li v-for="chunk in chunks" :key="chunk.chunk_index" class="panel p-3">
+                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-subtle">
                       Chunk {{ chunk.chunk_index }} · {{ formatNumber(chunk.chars) }} karakter
                     </p>
                     <p class="whitespace-pre-wrap break-words text-xs leading-relaxed text-subtle">
@@ -448,9 +475,15 @@ onMounted(() => {
         </tbody>
       </table>
 
-      <p v-if="rows.length === 0" class="px-4 py-10 text-center text-sm text-faint">
-        {{ isLoading ? 'Memuat dokumen…' : 'Belum ada dokumen.' }}
-      </p>
+      <div v-if="rows.length === 0" class="flex flex-col items-center gap-2 px-4 py-14 text-center">
+        <div class="grid h-11 w-11 place-items-center rounded-xl bg-elevated text-faint" aria-hidden="true">
+          <AppIcon :name="isLoading ? 'history' : 'database'" :size="20" />
+        </div>
+        <p class="text-sm text-subtle">{{ isLoading ? 'Memuat dokumen…' : 'Belum ada dokumen.' }}</p>
+        <p v-if="!isLoading" class="max-w-xs text-xs leading-relaxed text-faint">
+          Unggah berkas, tempel teks, atau ambil dari URL untuk mulai mengisi basis pengetahuan.
+        </p>
+      </div>
     </div>
 
     <div class="flex items-center justify-between gap-3">
@@ -462,7 +495,7 @@ onMounted(() => {
       <div class="flex gap-2">
         <button
           type="button"
-          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs font-medium text-subtle transition-colors hover:border-primary/80 hover:text-fg disabled:cursor-not-allowed disabled:border-border disabled:opacity-40 disabled:hover:text-subtle"
           :disabled="!hasPrevious"
           @click="move(-PAGE_SIZE)"
         >
@@ -470,7 +503,7 @@ onMounted(() => {
         </button>
         <button
           type="button"
-          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs text-subtle transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+          class="cursor-pointer rounded-xl border border-border-strong bg-surface px-3 py-2 text-xs font-medium text-subtle transition-colors hover:border-primary/80 hover:text-fg disabled:cursor-not-allowed disabled:border-border disabled:opacity-40 disabled:hover:text-subtle"
           :disabled="!hasNext"
           @click="move(PAGE_SIZE)"
         >

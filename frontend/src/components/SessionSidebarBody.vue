@@ -111,9 +111,12 @@ function onBlurRename(id: string): void {
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
     <div class="flex flex-col gap-2.5 p-3">
+      <!-- Filled, not outlined: on the rail the surface plane already lifts it,
+           and the one action this column exists for should not look like a
+           second-rank control. -->
       <button
         type="button"
-        class="flex cursor-pointer items-center gap-2 rounded-xl border border-border-strong bg-elevated px-3 py-2.5 text-sm font-medium text-fg shadow-sm transition-all duration-200 hover:border-primary/80 hover:shadow-card"
+        class="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary px-3 py-2.5 text-sm font-medium text-primary-fg shadow-glow transition-all duration-200 hover:brightness-110 active:scale-[0.99]"
         @click="emit('new')"
       >
         <AppIcon name="plus" :size="16" />
@@ -128,7 +131,7 @@ function onBlurRename(id: string): void {
           v-model="filter"
           type="search"
           placeholder="Cari percakapan…"
-          class="w-full rounded-xl border border-border bg-bg py-2 pl-8 pr-3 text-xs text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
+          class="w-full rounded-xl border border-border bg-surface py-2 pl-8 pr-3 text-xs text-fg placeholder:text-faint focus:border-primary/80 focus:outline-none"
         />
       </div>
     </div>
@@ -146,11 +149,17 @@ function onBlurRename(id: string): void {
         <p class="px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
           {{ group.label }}
         </p>
-        <ul class="flex flex-col gap-0.5">
+        <ul class="flex flex-col gap-1">
           <li v-for="session in group.items" :key="session.id" class="relative">
+            <!-- The active row is a raised chip on the rail, not a tint: a tint
+                 this close to the rail colour would read as nothing at all. -->
             <div
               class="group flex items-center rounded-xl transition-colors duration-150"
-              :class="session.id === activeId ? 'bg-elevated' : 'hover:bg-elevated/60'"
+              :class="
+                session.id === activeId
+                  ? 'bg-surface text-fg shadow-sm ring-1 ring-border'
+                  : 'hover:bg-surface/70'
+              "
             >
               <template v-if="editingId === session.id">
                 <input
@@ -182,7 +191,7 @@ function onBlurRename(id: string): void {
 
                 <DropdownMenuRoot>
                   <DropdownMenuTrigger
-                    class="mr-1.5 grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-lg text-faint opacity-0 transition-all duration-150 hover:bg-bg hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 aria-expanded:opacity-100"
+                    class="mr-1.5 grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-lg text-faint opacity-0 transition-all duration-150 hover:bg-elevated hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 aria-expanded:opacity-100"
                     aria-label="Menu percakapan"
                   >
                     <AppIcon name="more" :size="15" />
@@ -217,8 +226,11 @@ function onBlurRename(id: string): void {
       </template>
     </nav>
 
-    <div v-else class="flex min-h-0 flex-1 items-center justify-center px-6 pb-6">
-      <p class="text-center text-xs leading-relaxed text-faint">
+    <div v-else class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 pb-10 text-center">
+      <div class="grid h-10 w-10 place-items-center rounded-xl bg-surface text-faint ring-1 ring-border" aria-hidden="true">
+        <AppIcon :name="filter.trim() ? 'search' : 'message'" :size="18" />
+      </div>
+      <p class="text-xs leading-relaxed text-faint">
         {{
           isLoading
             ? 'Memuat percakapan…'
@@ -238,7 +250,11 @@ function onBlurRename(id: string): void {
           <button
             type="button"
             class="flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors duration-150"
-            :class="view === link.view ? 'bg-elevated text-fg' : 'text-subtle hover:bg-elevated/60'"
+            :class="
+              view === link.view
+                ? 'bg-surface text-fg shadow-sm ring-1 ring-border'
+                : 'text-subtle hover:bg-surface/70'
+            "
             :aria-current="view === link.view ? 'page' : undefined"
             @click="openView(link.view)"
           >
