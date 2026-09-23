@@ -100,6 +100,28 @@ def test_html_to_text_drops_navigation_and_footer():
     )
 
 
+def test_html_to_text_recovers_from_a_chrome_tag_that_is_never_closed():
+    """A browser closes <nav> implicitly at the enclosing </header>; HTMLParser does not,
+    so counting skipped tags swallowed everything after the dangling one. Measured on a
+    real news page with a single unclosed <aside>: 1,018 of 42,992 characters stored, the
+    ingest reporting success."""
+    dangling = (
+        "<html><body><header><nav><ul><li>Beranda</li></ul></header>"
+        "<main><h1>Retribusi Pasar</h1><p>Tarif Rp 5.000 per lapak per hari.</p></main></body></html>"
+    )
+    nested = (
+        "<p>Pengumuman resmi.</p><div class='side'><aside>Menu Berita</div>"
+        "<main><h1>Retribusi Pasar</h1><p>Tarif Rp 5.000.</p></main>"
+    )
+
+    assert document_service.clean_text(document_service.html_to_text(dangling)) == (
+        "Retribusi Pasar Tarif Rp 5.000 per lapak per hari."
+    )
+    recovered = document_service.clean_text(document_service.html_to_text(nested))
+    assert recovered == "Pengumuman resmi. Retribusi Pasar Tarif Rp 5.000.", "the page after the chrome still reads"
+    assert "Menu Berita" not in recovered, "the unclosed chrome itself is still dropped"
+
+
 def test_name_from_url_prefers_the_last_segment_then_the_host():
     assert document_service.name_from_url("https://contoh.id/docs/kebijakan-cuti.html") == "kebijakan-cuti.html"
     assert document_service.name_from_url("https://contoh.id/") == "contoh.id"

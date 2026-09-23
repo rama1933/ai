@@ -50,30 +50,47 @@ def clean_text(text: str) -> str:
 class _VisibleText(HTMLParser):
     """Everything a reader came for: no script, style or template bodies, and no navigation, sidebar or footer chrome.
 
-    `head` is deliberately not skipped. Its open tag is optional in HTML5, so a page
-    that omits `</head>` would leave the counter stuck and swallow the whole document;
+    Skipping reads the open-element stack rather than a count of skipped tags, because a
+    count never recovers: a browser closes <nav> implicitly at the enclosing </header> and
+    HTMLParser does not, so one dangling chrome tag dropped the rest of the page -- on a
+    real news page with a single unclosed <aside>, 1,018 of 42,992 characters were stored
+    and the ingest reported success.
+
+    `head` is deliberately not skipped. Its open tag is optional in HTML5, so a page that
+    omits `</head>` never pops it and it would stay on the stack for the whole document;
     the only text a head carries is the title, which is a fair description of the page.
     """
 
     SKIP = {"script", "style", "noscript", "template", "nav", "aside", "footer"}
+    # Never pushed: nothing to pop, and a stray </br> must not close a real element.
+    VOID = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self._depth = 0
+        self._open: list[str] = []
+
+    def _skipping(self) -> bool:
+        return any(tag in self.SKIP for tag in self._open)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self.SKIP:
-            self._depth += 1
+        if tag not in self.VOID:
+            self._open.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in self.SKIP:
-            self._depth = max(0, self._depth - 1)
-        elif not self._depth and tag in BLOCK_TAGS:
+        # Pop to the matching element, the way a browser closes an unclosed child: the
+        # <nav> inside that <header> goes away with the </header>, so what follows reads.
+        if tag in self._open:
+            while self._open.pop() != tag:
+                continue
+        if not self._skipping() and tag in BLOCK_TAGS:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if not self._depth:
+        if not self._skipping():
             self.parts.append(data)
 
 
