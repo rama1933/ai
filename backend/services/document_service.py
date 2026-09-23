@@ -48,14 +48,14 @@ def clean_text(text: str) -> str:
 
 
 class _VisibleText(HTMLParser):
-    """Everything a reader would see: no script, style or template bodies.
+    """Everything a reader came for: no script, style or template bodies, and no navigation, sidebar or footer chrome.
 
     `head` is deliberately not skipped. Its open tag is optional in HTML5, so a page
     that omits `</head>` would leave the counter stuck and swallow the whole document;
     the only text a head carries is the title, which is a fair description of the page.
     """
 
-    SKIP = {"script", "style", "noscript", "template"}
+    SKIP = {"script", "style", "noscript", "template", "nav", "aside", "footer"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -80,9 +80,10 @@ class _VisibleText(HTMLParser):
 def html_to_text(html: str) -> str:
     """Page markup down to its words.
 
-    ponytail: a tag stripper, not a readability extractor -- navigation and footer
-    boilerplate survive. Swap in a content extractor only if retrieval measurably
-    starts citing chrome instead of prose.
+    ponytail: a tag stripper, not a readability extractor. nav, aside and footer are
+    dropped because measured retrieval ranked a fact at #11 behind its own page's
+    menus; chrome built from plain divs still survives. Swap in a content extractor
+    only if that measurably starts costing answers.
     """
     parser = _VisibleText()
     parser.feed(html)

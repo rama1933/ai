@@ -82,6 +82,24 @@ def test_html_to_text_keeps_the_prose_and_drops_the_chrome():
     assert "hari. Pengajuan" in text
 
 
+def test_html_to_text_drops_navigation_and_footer():
+    """Measured: on a menu-heavy page the fact was 10% of its chunk and ranked #11.
+    Navigation, sidebars and footers are chrome, not knowledge."""
+    menu = "<li><a>Beranda Profil Berita Layanan PPID Kontak</a></li>" * 10
+    page = (
+        f"<html><body><nav><ul>{menu}</ul></nav><aside>Berita terpopuler</aside>"
+        "<main><h1>Retribusi Pasar</h1><p>Tarif Rp 5.000 per lapak per hari.</p></main>"
+        f"<footer>{menu} Hak cipta 2026</footer></body></html>"
+    )
+
+    text = document_service.clean_text(document_service.html_to_text(page))
+
+    assert text == "Retribusi Pasar Tarif Rp 5.000 per lapak per hari."
+    assert document_service.clean_text(document_service.html_to_text(f"<nav>{menu}</nav>")) == "", (
+        "a page that is all navigation reads as empty and is refused, not stored"
+    )
+
+
 def test_name_from_url_prefers_the_last_segment_then_the_host():
     assert document_service.name_from_url("https://contoh.id/docs/kebijakan-cuti.html") == "kebijakan-cuti.html"
     assert document_service.name_from_url("https://contoh.id/") == "contoh.id"
