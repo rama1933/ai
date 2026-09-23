@@ -88,3 +88,18 @@ def test_rag_search_returns_empty_when_everything_is_below_the_floor(db, monkeyp
     monkeypatch.setattr(rag_tool, "embed_query", lambda q: _vector(1.0))
 
     assert rag_tool.rag_search(db, "apa saja", top_k=4) == []
+
+
+def test_rag_search_returns_one_copy_of_a_chunk_stored_under_two_names(db, monkeypatch):
+    """The same PDF uploaded three times filled all four slots with one passage, and a
+    fresh URL ingest at rank #11 never reached the model. One copy, then the next
+    distinct passage."""
+    db.add(Document(filename="ragtest-a.pdf", content="jadwal interviu", embedding=_vector(1.0), doc_metadata={}))
+    db.add(Document(filename="ragtest-a-copy.pdf", content="jadwal interviu", embedding=_vector(1.0), doc_metadata={}))
+    db.add(Document(filename="ragtest-b.txt", content="tarif retribusi pasar", embedding=_vector2(1.0, 0.5), doc_metadata={}))
+    db.flush()
+    monkeypatch.setattr(rag_tool, "embed_query", lambda q: _vector(1.0))
+
+    hits = rag_tool.rag_search(db, "apa saja", top_k=2)
+
+    assert [h.content for h in hits] == ["jadwal interviu", "tarif retribusi pasar"]

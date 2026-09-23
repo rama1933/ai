@@ -37,16 +37,23 @@ def rag_search(
     query_ = db.query(Document.filename, Document.content, distance)
     if filenames:
         query_ = query_.filter(Document.filename.in_(filenames))
-    # Over-fetch so the score floor cannot silently hand back fewer than the
-    # documents that actually clear it.
-    rows = query_.order_by(distance).limit(top_k * 3).all()
+    # Over-fetch so the score floor and the dedupe below cannot silently hand back
+    # fewer than the documents that actually clear it.
+    # ponytail: 5x, kept under pgvector's default hnsw.ef_search of 40 -- an HNSW
+    # scan returns at most that many rows. Raise ef_search with the multiplier if
+    # top_k ever grows past 8.
+    rows = query_.order_by(distance).limit(top_k * 5).all()
 
+    # One copy per passage: the same file uploaded three times filled every slot
+    # with one chunk (193 of 263 distinct chunks sit under more than one name).
     min_score = get_settings().rag_min_score
-    hits = [
-        RagHit(filename=filename, content=content, score=round(1.0 - float(dist), 4))
-        for filename, content, dist in rows
-        if 1.0 - float(dist) >= min_score
-    ]
+    hits: list[RagHit] = []
+    seen: set[str] = set()
+    for filename, content, dist in rows:
+        score = round(1.0 - float(dist), 4)
+        if score >= min_score and content not in seen:
+            seen.add(content)
+            hits.append(RagHit(filename=filename, content=content, score=score))
     return hits[:top_k]
 
 
