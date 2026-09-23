@@ -8,7 +8,7 @@ from tools import rag_tool
 @pytest.fixture
 def db():
     session = SessionLocal()
-    session.query(Document).filter(Document.filename.like("ragtest-%")).delete(synchronize_session=False)
+    session.query(Document).filter(Document.filename.like("%ragtest-%")).delete(synchronize_session=False)
     session.flush()
     yield session
     session.rollback()
@@ -115,6 +115,89 @@ def test_rag_search_returns_one_copy_of_a_chunk_stored_under_two_names(db, monke
     hits = rag_tool.rag_search(db, "apa saja", top_k=2)
 
     assert [h.content for h in hits] == ["jadwal interviu", "tarif retribusi pasar"]
+
+
+def test_named_documents_finds_a_name_the_query_quotes(db):
+    """Measured on the live corpus: 19 of 27 stored documents could not be reached by
+    their own name -- asked "apa isi file policy.txt", the search returned nothing, because
+    a chunk holds content while the name lives in another column."""
+    db.add(Document(filename="ragtest-saya_adalah.txt", content="isi apa saja", embedding=_vector(1.0), doc_metadata={}))
+    db.flush()
+
+    assert rag_tool.named_documents(db, "apa isi file ragtest-saya_adalah.txt") == ["ragtest-saya_adalah.txt"]
+    assert rag_tool.named_documents(db, "apa isi file RAGTEST-SAYA_ADALAH.txt") == ["ragtest-saya_adalah.txt"]
+    assert rag_tool.named_documents(db, "berapa masa retensi dokumen?") == []
+
+
+def test_named_documents_accepts_a_name_without_its_extension(db):
+    db.add(Document(filename="ragtest-nusantara.pdf", content="isi apa saja", embedding=_vector(1.0), doc_metadata={}))
+    db.flush()
+
+    assert rag_tool.named_documents(db, "ringkas isi file ragtest-nusantara") == ["ragtest-nusantara.pdf"]
+
+
+def test_named_documents_prefers_the_most_specific_name_the_query_quotes(db):
+    """The corpus holds copies whose names contain each other -- a re-upload lands as
+    "<uuid>-name.pdf" while "name.pdf" is still there, and the shorter name is a suffix of
+    the longer one, so a question about the longer quotes both. Measured on the live corpus:
+    asking for "2026kb6306267__1_.pdf" answered with "2026kb6306267.pdf"."""
+    long_name = "ragtest-ragtest-2026kb.pdf"
+    short_name = "ragtest-2026kb.pdf"
+    db.add(Document(filename=long_name, content="isi panjang", embedding=_vector(1.0), doc_metadata={}))
+    db.add(Document(filename=short_name, content="isi pendek", embedding=_vector(1.0), doc_metadata={}))
+    db.flush()
+
+    assert short_name in f"apa isi file {long_name}", "the shorter name is quoted too, or this proves nothing"
+    assert rag_tool.named_documents(db, f"apa isi file {long_name}") == [long_name]
+
+
+def test_named_documents_keeps_every_document_the_query_names(db):
+    """Measured on the live corpus: "apa isi file policy.txt dan ktp.jpeg" came back with
+    policy.txt alone, because the longest-name rule dropped every shorter name -- including
+    ones the question actually asked for, and a named scope does not widen, so the corpus
+    could not cover for it."""
+    db.add(Document(filename="ragtest-policy.txt", content="kebijakan", embedding=_vector(1.0), doc_metadata={}))
+    db.add(Document(filename="ragtest-ktp.jpeg", content="ktp", embedding=_vector(1.0), doc_metadata={}))
+    db.flush()
+
+    assert rag_tool.named_documents(db, "apa isi file ragtest-policy.txt dan ragtest-ktp.jpeg") == [
+        "ragtest-ktp.jpeg",
+        "ragtest-policy.txt",
+    ]
+
+
+def test_named_documents_keeps_every_copy_of_a_quoted_name(db):
+    """The corpus holds one document under several uuid-prefixed names, so a single quoted
+    name matches several rows that all display the same. Dropping a name because an
+    identical one is also quoted loses the document entirely -- measured, the by-name sweep
+    over the live corpus fell from 25 of 28 stored rows to 15."""
+    db.add(Document(filename="a" * 32 + "-ragtest-ktp.jpeg", content="a", embedding=_vector(1.0), doc_metadata={}))
+    db.add(Document(filename="b" * 32 + "-ragtest-ktp.jpeg", content="b", embedding=_vector(1.0), doc_metadata={}))
+    db.flush()
+
+    assert rag_tool.named_documents(db, "apa isi file ragtest-ktp.jpeg") == [
+        "a" * 32 + "-ragtest-ktp.jpeg",
+        "b" * 32 + "-ragtest-ktp.jpeg",
+    ]
+
+
+def test_a_bare_word_that_matches_a_file_stem_does_not_scope_a_search():
+    """Measured on the live corpus: "berapa jumlah provinsi di nusantara?" stepped on the
+    word "nusantara", scoped the search to nusantara.pdf, and -- a named scope not widening
+    -- the turn answered from a document the question never mentioned. A stem counts only
+    when the query says it is asking about a file."""
+    assert not rag_tool._name_in_query("nusantara.pdf", "berapa jumlah provinsi di nusantara?")
+    assert rag_tool._name_in_query("nusantara.pdf", "apa isi file nusantara")
+    assert rag_tool._name_in_query("nusantara.pdf", "ringkas dokumen nusantara")
+
+
+def test_a_stem_too_short_to_be_a_name_does_not_scope_a_search():
+    """A guard, and green when it was written: "ktp" is a subject, not a file name, and
+    scoping to a three-letter stem would narrow questions that never named anything."""
+    assert rag_tool._name_in_query("ktp.jpeg", "apa isi file ktp.jpeg"), "the whole name still counts"
+    assert not rag_tool._name_in_query("ktp.jpeg", "apa syarat membuat ktp")
+    assert not rag_tool._name_in_query("ktp.jpeg", "apa isi file ktp"), "a marker does not rescue three letters"
+    assert rag_tool._name_in_query("policy.txt", "bagaimana isi file policy itu")
 
 
 def test_rag_search_expands_a_province_abbreviation_before_embedding(db, monkeypatch):

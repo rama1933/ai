@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from config import get_settings
 from models import Document
 from services.embedding_service import embed_query
+from services.upload_service import display_name_of
 
 
 # Province shorthand, spelled out into the query before it is embedded.
@@ -62,6 +63,61 @@ def _expanded(query: str) -> str:
         if short in words and not set(full.split()) <= words
     ]
     return f"{query} {' '.join(spelled)}" if spelled else query
+
+
+# Words that mark a query as being about a file rather than about the world. A stem alone
+# counts only with one of these: measured on the live corpus, "berapa jumlah provinsi di
+# nusantara?" stepped on the word "nusantara" and scoped the search to nusantara.pdf --
+# and a named scope does not widen, so the turn answered from a document the question never
+# mentioned instead of from the corpus.
+_FILE_MARKERS = frozenset({"file", "dokumen", "berkas", "doc"})
+
+
+def _name_in_query(display: str, folded_query: str) -> bool:
+    """True when the query quotes this document's name, with or without its extension.
+
+    The whole name carries its own proof that a file is meant. A stem needs a marker word
+    as well, and five characters: "ktp" is a subject, not a file name.
+    """
+    if display.casefold() in folded_query:
+        return True
+    stem = display.rsplit(".", 1)[0]
+    return (
+        len(stem) >= 5
+        and stem.casefold() in folded_query
+        and bool(set(_TOKEN.findall(folded_query)) & _FILE_MARKERS)
+    )
+
+
+def named_documents(db: Session | None, query: str) -> list[str]:
+    """The stored filenames this query names, by the name the operator sees.
+
+    Measured on the live corpus: 19 of 27 stored documents could not be reached by their
+    own name -- asked "apa isi file policy.txt", the search came back empty. A chunk holds
+    the document's content and its name lives in another column, so nothing was ever
+    embedded for a name to match; the handful that did work were names that happened to
+    share vocabulary with their own text.
+    """
+    if db is None:  # the callers that pass no session have nothing to look names up in
+        return []
+    folded = query.casefold()
+    rows = db.query(Document.filename).distinct().order_by(Document.filename).all()
+    quoted = {name: display_name_of(name) for (name,) in rows}
+    exact = [name for name, display in quoted.items() if display.casefold() in folded]
+    if exact:
+        # Copies nest -- "X.pdf" sits inside "X__1_.pdf" and inside a uuid-prefixed copy of
+        # either -- so a quoted name contained in a DIFFERENT quoted name is that other
+        # document. A name that is merely shorter is its own document and stays: measured,
+        # dropping every shorter name lost the second document of "policy.txt dan ktp.jpeg".
+        # Identical names are the same document under several stored names, and each has to
+        # stay: dropping them lost 10 of 28 rows in the by-name sweep.
+        folded_names = {name: quoted[name].casefold() for name in exact}
+        return [
+            n
+            for n in exact
+            if not any(n != m and folded_names[n] != folded_names[m] and folded_names[n] in folded_names[m] for m in exact)
+        ]
+    return [name for name, display in quoted.items() if _name_in_query(display, folded)]
 
 
 @dataclass(frozen=True)

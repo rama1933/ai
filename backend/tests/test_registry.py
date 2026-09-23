@@ -189,6 +189,63 @@ def test_dispatch_first_chunks_fallback_does_not_widen(monkeypatch):
     assert [s.filename for s in outcome.sources] == ["abc-laporan.pdf"]
 
 
+def test_dispatch_scopes_to_the_document_the_query_names(monkeypatch):
+    """The model names no file -- but the user does, in the question. Measured, most stored
+    documents could not be reached by their own name at all: the name is not part of what
+    was embedded, so a search has nothing to match it against."""
+    seen = {}
+    monkeypatch.setattr(
+        registry, "rag_search",
+        lambda db, query, top_k=4, filenames=None: seen.update(filenames=filenames, top_k=top_k)
+        or [RagHit(filename="abc-laporan.pdf", content="isi laporan", score=0.8)],
+    )
+    monkeypatch.setattr(registry, "named_documents", lambda db, query: ["abc-laporan.pdf"])
+
+    outcome = registry.dispatch("rag_search", {"query": "apa isi file abc-laporan.pdf"}, db=None, image_paths=[])
+
+    assert seen["filenames"] == ["abc-laporan.pdf"]
+    assert [s.filename for s in outcome.sources] == ["abc-laporan.pdf"]
+
+
+def test_dispatch_does_not_widen_a_search_the_query_narrowed(monkeypatch):
+    """Naming a document asks about that document, so the corpus must not be pulled back in
+    around it -- the same rule the file this message attached already gets."""
+    calls = []
+    monkeypatch.setattr(
+        registry, "rag_search",
+        lambda db, query, top_k=4, filenames=None: calls.append(filenames)
+        or [RagHit(filename="abc-laporan.pdf", content="isi laporan", score=0.72)],
+    )
+    monkeypatch.setattr(registry, "named_documents", lambda db, query: ["abc-laporan.pdf"])
+
+    registry.dispatch("rag_search", {"query": "apa isi file abc-laporan.pdf"}, db=None, image_paths=[])
+
+    assert calls == [["abc-laporan.pdf"]]
+
+
+def test_dispatch_lets_the_session_scope_win_over_a_named_document(monkeypatch):
+    """A guard, and green when it was written: read-first reads the session's own files, and
+    that scope is server-derived -- a name in the query must not displace it."""
+    calls = []
+    monkeypatch.setattr(
+        registry, "rag_search",
+        lambda db, query, top_k=4, filenames=None: calls.append(filenames)
+        or [RagHit(filename="session.pdf", content="isi sesi", score=0.8)],
+    )
+    monkeypatch.setattr(
+        registry, "named_documents",
+        lambda db, query: (_ for _ in ()).throw(AssertionError("the session scope decides")),
+    )
+
+    registry.dispatch(
+        "rag_search", {"query": "apa isi file lain.pdf"}, db=None,
+        image_paths=[], document_filenames=["session.pdf"],
+    )
+
+    # The scoped call, not the widening one that follows it -- that one is unscoped by design.
+    assert calls[0] == ["session.pdf"]
+
+
 def test_dispatch_reaches_the_corpus_when_the_session_scope_has_nothing_left(monkeypatch):
     """A session whose attachment was deleted from the knowledge page still names it in
     chat_history, so the scoped search and its first_chunks fallback both come back empty
