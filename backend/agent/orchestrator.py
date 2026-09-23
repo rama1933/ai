@@ -469,6 +469,7 @@ def _read_attachments(
     message: str,
     image_paths: list[str] | None,
     scope: list[str],
+    widen: bool,
 ) -> list[tuple[str, dict, registry.ToolOutcome]]:
     """Read every file this message carries, before the model gets a say.
 
@@ -486,6 +487,10 @@ def _read_attachments(
     Only grounded readings survive -- an image with no readable text, or a scoped
     search with no hits, must not inject "tidak ditemukan" into the transcript, which
     would answer the question for the model.
+
+    `widen` is False when `scope` is the files THIS message attached: those are read
+    on their own. A follow-up reads the session scope with the corpus open, because
+    knowledge added after the session began lives outside it.
     """
     readings: list[tuple[str, dict, registry.ToolOutcome]] = []
     if image_paths:
@@ -503,7 +508,9 @@ def _read_attachments(
             (
                 "rag_search",
                 arguments,
-                registry.dispatch("rag_search", arguments, db=db, image_paths=[], document_filenames=scope),
+                registry.dispatch(
+                    "rag_search", arguments, db=db, image_paths=[], document_filenames=scope, widen=widen
+                ),
             )
         )
     return [reading for reading in readings if reading[2].grounded]
@@ -610,7 +617,9 @@ def stream_agent(
     # Read-first, and only for a turn that may answer from something. A greeting reads
     # nothing and must keep its tool_used None, even when a file rides along with it.
     if not small_talk:
-        for name, arguments, outcome in _read_attachments(db, message, image_paths, read_scope):
+        for name, arguments, outcome in _read_attachments(
+            db, message, image_paths, read_scope, widen=not attached_documents
+        ):
             yield {"type": "tool", "name": name}
             absorb(name, outcome)
             sources.extend(outcome.sources)

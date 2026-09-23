@@ -70,7 +70,7 @@ def test_tool_call_result_is_fed_back_and_answer_returned(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[policy.pdf] retensi 5 tahun", sources=[SourceRef(filename="policy.pdf", score=0.9)]
         ),
     )
@@ -96,7 +96,7 @@ def test_system_prompt_and_tools_are_sent_for_a_knowledge_question(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="retensi 5 tahun"),
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(text="retensi 5 tahun"),
     )
 
     orchestrator.run_agent(db=None, message="berapa retensi?", history=[])
@@ -136,7 +136,7 @@ def test_iteration_cap_stops_a_tool_call_loop(monkeypatch):
     loop_reply = _reply(tool_calls=[{"function": {"name": "rag_search", "arguments": {"query": "x"}}}])
     _mock_ollama(monkeypatch, [loop_reply] * 10)
     monkeypatch.setattr(
-        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="nothing")
+        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(text="nothing")
     )
 
     result = orchestrator.run_agent(db=None, message="loop", history=[])
@@ -156,7 +156,7 @@ def test_tool_call_written_as_content_is_dispatched_not_leaked(monkeypatch):
     dispatched: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: (
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: (
             dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
         ),
     )
@@ -210,7 +210,7 @@ def test_tool_used_records_the_first_tool_of_a_multi_tool_turn(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[policy.txt] retensi dokumen adalah 5 tahun"
         ),
     )
@@ -270,7 +270,7 @@ def test_a_grounded_answer_is_released_only_by_done(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[policy.txt] retensi dokumen adalah 5 tahun", sources=[SourceRef(filename="policy.txt", score=0.9)]
         ),
     )
@@ -301,7 +301,7 @@ def test_stream_tool_call_blob_is_never_streamed_as_text(monkeypatch):
     dispatched: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: (
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: (
             dispatched.append((name, arguments)) or registry.ToolOutcome(text="[(1,)]")
         ),
     )
@@ -343,7 +343,7 @@ def test_stream_exhausted_loop_yields_give_up_done(monkeypatch):
     ]
     _mock_ollama_chunks(monkeypatch, [loop] * 10)
     monkeypatch.setattr(
-        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="nothing")
+        registry, "dispatch", lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(text="nothing")
     )
 
     events = list(orchestrator.stream_agent(db=None, message="loop", history=[]))
@@ -366,7 +366,7 @@ def test_stream_agent_threads_document_filenames_to_dispatch(monkeypatch):
     _mock_ollama_chunks(monkeypatch, [tool_turn, answer_turn])
     captured = {}
 
-    def capture_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def capture_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         captured["document_filenames"] = document_filenames
         return registry.ToolOutcome(text="ok")
 
@@ -450,7 +450,7 @@ def test_an_empty_retrieval_does_not_license_a_fabricated_answer(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="No matching document found in the knowledge base. (tidak ditemukan)", grounded=False
         ),
     )
@@ -476,7 +476,7 @@ def test_a_source_less_tool_result_still_licenses_the_answer(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="[{'count': 12}]"),
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(text="[{'count': 12}]"),
     )
 
     result = orchestrator.run_agent(db=None, message="Berapa jumlah baris pada tabel documents?", history=[])
@@ -502,7 +502,7 @@ def test_an_empty_sql_result_is_not_data(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(text="[]", grounded=False),
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(text="[]", grounded=False),
     )
 
     result = orchestrator.run_agent(db=None, message="Berapa dokumen yang cocok?", history=[])
@@ -642,7 +642,7 @@ def test_an_answer_retrieval_did_not_supply_is_refused(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[2026kb6306267.pdf] Peraturan Pemerintah Nomor 24 Tahun 1997 tentang Pendaftaran Tanah "
             "(Lembaran Negara Republik Indonesia Tahun 1997 Nomor 59). Presiden Republik Indonesia menetapkan.",
             sources=[SourceRef(filename="2026kb6306267.pdf", score=0.724)],
@@ -680,7 +680,7 @@ def test_a_second_grounded_tool_does_not_disable_the_support_check(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: (
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: (
             registry.ToolOutcome(text="[{'count': 617}]")
             if name == "sql_query"
             else registry.ToolOutcome(
@@ -740,7 +740,7 @@ def test_an_answer_the_retrieval_did_supply_is_released(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[policy.txt] Seluruh dokumen keuangan disimpan selama 5 (lima) tahun sejak tanggal penerbitan.",
             sources=[SourceRef(filename="policy.txt", score=0.73)],
         ),
@@ -763,7 +763,7 @@ def test_a_short_answer_with_nothing_to_trace_is_not_refused(monkeypatch):
     )
     monkeypatch.setattr(
         registry, "dispatch",
-        lambda name, arguments, db, image_paths, document_filenames=None: registry.ToolOutcome(
+        lambda name, arguments, db, image_paths, document_filenames=None, **_: registry.ToolOutcome(
             text="[policy.txt] Setiap karyawan tetap berhak atas cuti tahunan sebanyak 12 (dua belas) hari kerja."
         ),
     )
@@ -802,7 +802,7 @@ def test_an_attached_image_is_read_before_the_model_is_asked(monkeypatch):
     """
     seen = []
 
-    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         seen.append((name, tuple(image_paths or ())))
         return registry.ToolOutcome(
             text="TOKO MAJU JAYA TOTAL 43000", sources=[SourceRef(filename="receipt.png")]
@@ -848,7 +848,7 @@ def test_an_attached_document_is_searched_before_the_model_is_asked(monkeypatch)
     answer at 0.6368."""
     seen = []
 
-    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         seen.append((name, arguments.get("query"), tuple(document_filenames or ())))
         return registry.ToolOutcome(
             text="[abc-laporan.pdf] Total anggaran Rp 987.654.321.",
@@ -882,7 +882,7 @@ def test_an_image_is_not_searched_again_as_a_document(monkeypatch):
     """
     seen = []
 
-    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         seen.append((name, tuple(document_filenames or ())))
         return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="receipt.png")])
 
@@ -1019,7 +1019,7 @@ def test_read_first_reads_what_this_message_attached_not_the_whole_session(monke
     """
     seen = []
 
-    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         seen.append(tuple(document_filenames or ()))
         return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="laporan.pdf")])
 
@@ -1044,7 +1044,7 @@ def test_read_first_falls_back_to_the_session_scope_when_nothing_is_attached(mon
     session scope exists for."""
     seen = []
 
-    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None):
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, **_):
         seen.append(tuple(document_filenames or ()))
         return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="abc-laporan.pdf")])
 
@@ -1061,6 +1061,59 @@ def test_read_first_falls_back_to_the_session_scope_when_nothing_is_attached(mon
     )
 
     assert seen == [("abc-laporan.pdf",)]
+
+
+def test_read_first_keeps_a_fresh_attachment_narrow(monkeypatch):
+    """The file this message brought is read on its own: widening here is how a
+    receipt's chunk answered a question about a freshly attached PDF."""
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, widen=True):
+        seen.append(widen)
+        return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="laporan.pdf")])
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Baik."}]])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Pelajari dokumen ini.",
+            history=[],
+            document_filenames=["abc-laporan.pdf", "xyz-struk.png"],
+            attached_documents=["abc-laporan.pdf"],
+        )
+    )
+
+    assert seen == [False]
+
+
+def test_read_first_on_a_follow_up_also_searches_the_corpus(monkeypatch):
+    """A follow-up carries no file of its own, so the session's files must not be the
+    only place it can look -- knowledge added after the session began lives outside.
+
+    The fake defaults `widen` to None, not True: a default of True would pass whether
+    or not the orchestrator forwarded the argument at all, which is the thing under test.
+    """
+    seen = []
+
+    def fake_dispatch(name, arguments, db, image_paths, document_filenames=None, widen=None):
+        seen.append(widen)
+        return registry.ToolOutcome(text="kept", sources=[SourceRef(filename="abc-laporan.pdf")])
+
+    monkeypatch.setattr(registry, "dispatch", fake_dispatch)
+    _mock_ollama_chunks(monkeypatch, [[{"role": "assistant", "content": "Baik."}]])
+
+    list(
+        orchestrator.stream_agent(
+            db=None,
+            message="Kapan jadwal pelayanan KTP?",
+            history=[],
+            document_filenames=["abc-laporan.pdf"],
+        )
+    )
+
+    assert seen == [True]
 
 
 def test_a_read_attachment_tells_the_model_what_to_do_with_it(monkeypatch):

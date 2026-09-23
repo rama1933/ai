@@ -120,6 +120,75 @@ def test_dispatch_rag_search_without_session_documents_stays_global(monkeypatch)
     assert "retensi 5 tahun" in outcome.text
 
 
+def test_dispatch_lets_a_stronger_corpus_hit_into_a_scoped_search(monkeypatch):
+    """A session that once carried a PDF could never reach knowledge added later:
+    measured live, the new note scored 0.86 unscoped while the scoped search returned
+    six chunks of the old PDF at 0.72 -- above the floor, so the turn looked grounded.
+    A corpus hit that beats the best session hit comes in; a weaker one and a second
+    copy of a session passage do not."""
+    def fake_rag(db, query, top_k=4, filenames=None):
+        if filenames:
+            return [RagHit(filename="abc-jadwal.pdf", content="jadwal interviu", score=0.72)]
+        return [
+            RagHit(filename="new-ktp.txt", content="pelayanan KTP hari Selasa", score=0.86),
+            RagHit(filename="copy-jadwal.pdf", content="jadwal interviu", score=0.72),
+            RagHit(filename="old.txt", content="makanan khas", score=0.65),
+        ]
+
+    monkeypatch.setattr(registry, "rag_search", fake_rag)
+
+    outcome = registry.dispatch(
+        "rag_search", {"query": "jadwal KTP"}, db=None,
+        image_paths=[], document_filenames=["abc-jadwal.pdf"],
+    )
+
+    assert [s.filename for s in outcome.sources] == ["new-ktp.txt", "abc-jadwal.pdf"]
+
+
+def test_dispatch_without_widen_keeps_a_scoped_search_to_its_files(monkeypatch):
+    """The turn that attaches a file reads that file only -- see
+    test_read_first_reads_what_this_message_attached_not_the_whole_session."""
+    calls = []
+
+    def fake_rag(db, query, top_k=4, filenames=None):
+        calls.append(filenames)
+        return [RagHit(filename="abc-jadwal.pdf", content="jadwal interviu", score=0.72)]
+
+    monkeypatch.setattr(registry, "rag_search", fake_rag)
+
+    registry.dispatch(
+        "rag_search", {"query": "jadwal"}, db=None,
+        image_paths=[], document_filenames=["abc-jadwal.pdf"], widen=False,
+    )
+
+    assert calls == [["abc-jadwal.pdf"]]
+
+
+def test_dispatch_first_chunks_fallback_does_not_widen(monkeypatch):
+    """A vague "pelajari dokumen ini" that clears the floor against nothing anchors to
+    the session's opening chunks; the corpus is not searched, so a stray 0.65 chunk
+    from another file cannot take the summary over."""
+    calls = []
+
+    def fake_rag(db, query, top_k=4, filenames=None):
+        calls.append(filenames)
+        return []
+
+    monkeypatch.setattr(registry, "rag_search", fake_rag)
+    monkeypatch.setattr(
+        registry, "first_chunks",
+        lambda db, filenames, limit=4: [RagHit(filename="abc-laporan.pdf", content="KEPUTUSAN BUPATI", score=1.0)],
+    )
+
+    outcome = registry.dispatch(
+        "rag_search", {"query": "pelajari dokumen ini"}, db=None,
+        image_paths=[], document_filenames=["abc-laporan.pdf"],
+    )
+
+    assert calls == [["abc-laporan.pdf"]]
+    assert [s.filename for s in outcome.sources] == ["abc-laporan.pdf"]
+
+
 def test_image_ocr_keeps_the_extract_as_the_corpus_for_that_image(monkeypatch):
     """An image is readable only while it is attached -- the orchestrator hands OCR the
     paths of THIS message -- so the text has to outlive the turn.

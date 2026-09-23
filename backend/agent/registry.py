@@ -119,6 +119,7 @@ def dispatch(
     db: Session | None,
     image_paths: list[str] | None,
     document_filenames: list[str] | None = None,
+    widen: bool = True,
 ) -> ToolOutcome:
     """Run one tool call. Failures come back as text so the model can recover.
 
@@ -126,6 +127,10 @@ def dispatch(
     documents its session references -- both resolved from the authenticated
     request, never names the model chose; the tool schemas deliberately expose
     no file parameter.
+
+    widen lets a scoped search reach the shared corpus when the corpus holds a
+    stronger match than any of the session's files. False only for the turn that
+    attaches a file, which must read that file on its own.
     """
     if name == "rag_search":
         # With session documents on record, scope retrieval to them and read a
@@ -134,12 +139,21 @@ def dispatch(
         # the model's own query embeds too weakly to clear the floor against
         # those files, fall back to their opening chunks -- the title and
         # subject line a summary needs -- instead of answering "not found".
+        query = str(arguments.get("query", ""))
         filenames = document_filenames or None
-        hits = rag_search(
-            db, str(arguments.get("query", "")), top_k=6 if filenames else 4, filenames=filenames
-        )
+        hits = rag_search(db, query, top_k=6 if filenames else 4, filenames=filenames)
         if filenames and not hits:
             hits = first_chunks(db, filenames)
+        elif filenames and widen:
+            # A scope alone locked every session that ever carried a file out of
+            # knowledge added later. Measured live: a new note scored 0.86 unscoped
+            # while the scope returned an old PDF at 0.72 -- above the floor, so the
+            # turn looked grounded and the note was never searched. Only a corpus hit
+            # that BEATS the session's best comes in, so a question about the
+            # session's own file keeps answering from it.
+            best = hits[0].score
+            known = {h.content for h in hits}
+            hits = [h for h in rag_search(db, query) if h.score > best and h.content not in known] + hits
         if not hits:
             return ToolOutcome(
                 text="No matching document found in the knowledge base. (tidak ditemukan)",
