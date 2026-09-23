@@ -8,7 +8,7 @@ from models import User
 from schemas import IngestResponse, IngestTextRequest, IngestUrlRequest
 from security import get_current_user, require_role
 from services import audit
-from services.document_service import IngestError, fetch_url_text, ingest_file, name_from_url
+from services.document_service import IngestError, clean_text, fetch_url_text, ingest_file, name_from_url
 from services.embedding_service import EmbeddingError
 from services.upload_service import UploadRejected, save_upload, store_text_file
 
@@ -39,6 +39,17 @@ def _ingest_stored(db: Session, stored_path: Path, user: User) -> int:
     return chunks
 
 
+def _titled(title: str | None, text: str) -> str:
+    """The operator's title as the first line of what gets embedded.
+
+    A title that only names the file is invisible to retrieval: measured, a short
+    note asked about by its title missed the top four, and with the title leading
+    its text it ranked first at 0.84. Text that cleans down to nothing stays as it
+    was, so the empty-text refusals downstream still fire.
+    """
+    return f"{title}\n\n{text}" if title and clean_text(text) else text
+
+
 @router.post("", response_model=IngestResponse)
 def ingest_document(
     file: UploadFile = File(...),
@@ -61,7 +72,7 @@ def ingest_text(
 ) -> IngestResponse:
     """Pasted text, written out as a file so it is a document like any other."""
     try:
-        stored_path = store_text_file(payload.content, payload.title or "catatan")
+        stored_path = store_text_file(_titled(payload.title, payload.content), payload.title or "catatan")
     except UploadRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -85,7 +96,7 @@ def ingest_url(
     /chat and the SQL tool can then quote back."""
     try:
         text = fetch_url_text(payload.url)
-        stored_path = store_text_file(text, payload.title or name_from_url(payload.url))
+        stored_path = store_text_file(_titled(payload.title, text), payload.title or name_from_url(payload.url))
     except (IngestError, UploadRejected) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

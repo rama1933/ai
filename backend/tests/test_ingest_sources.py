@@ -118,7 +118,9 @@ def test_pasted_text_is_ingested_as_a_document_of_its_own(client, auth, embed_of
     session = SessionLocal()
     try:
         row = session.query(Document).filter(Document.filename == body["filename"]).one()
-        assert row.content == "cuti tahunan 12 hari", "stored as the text it was given, nothing appended"
+        # The title is embedded with the body: a short note ("cuti tahunan 12 hari")
+        # asked about by its title missed the top four until it was.
+        assert row.content == f"{name} cuti tahunan 12 hari"
     finally:
         session.close()
 
@@ -139,6 +141,7 @@ def test_a_url_is_fetched_and_stored_as_text(client, admin, embed_offline, monke
     try:
         row = session.query(Document).filter(Document.filename == body["filename"]).one()
         assert "Cuti tahunan 12 hari." in row.content
+        assert row.content.startswith(name), "the operator's title leads the page text"
         assert row.doc_metadata["source"].endswith(f"{name}.txt"), "the source is the stored file, not the URL"
     finally:
         session.close()
@@ -237,3 +240,14 @@ def test_text_that_cleans_down_to_nothing_takes_its_file_with_it(client, auth, e
 
 def test_empty_text_is_refused_at_the_edge(client, auth):
     assert client.post("/documents/text", headers=auth, json={"title": "x", "content": ""}).status_code == 422
+
+
+def test_titled_leaves_empty_text_empty():
+    """A title must not rescue a body that cleans down to nothing -- the empty-text
+    refusals downstream have to keep firing."""
+    from routers.documents import _titled
+
+    assert _titled("Jadwal KTP", "Selasa 08.00") == "Jadwal KTP\n\nSelasa 08.00"
+    assert _titled(None, "Selasa 08.00") == "Selasa 08.00"
+    assert _titled("Jadwal KTP", "\x00\x00") == "\x00\x00"
+    assert _titled("Jadwal KTP", "   ") == "   "
