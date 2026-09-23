@@ -24,6 +24,18 @@ def _vector2(a: float, b: float) -> list[float]:
     return [a, b] + [0.0] * 766
 
 
+def _captured_query(monkeypatch) -> dict[str, str]:
+    """What rag_search hands the embedding model, under "query"."""
+    seen: dict[str, str] = {}
+
+    def capture(query: str) -> list[float]:
+        seen["query"] = query
+        return _vector(1.0)
+
+    monkeypatch.setattr(rag_tool, "embed_query", capture)
+    return seen
+
+
 def test_rag_search_returns_nearest_chunks_first(db, monkeypatch):
     db.add(Document(filename="ragtest-a.txt", content="masa retensi dokumen 5 tahun", embedding=_vector(1.0), doc_metadata={}))
     db.add(Document(filename="ragtest-b.txt", content="kebijakan arsip dan retensi dokumen", embedding=_vector2(1.0, 0.5), doc_metadata={}))
@@ -103,3 +115,37 @@ def test_rag_search_returns_one_copy_of_a_chunk_stored_under_two_names(db, monke
     hits = rag_tool.rag_search(db, "apa saja", top_k=2)
 
     assert [h.content for h in hits] == ["jadwal interviu", "tarif retribusi pasar"]
+
+
+def test_rag_search_expands_a_province_abbreviation_before_embedding(db, monkeypatch):
+    """Measured on the live corpus: "apa makanan khas kalsel" scored 0.5939 against the
+    chunk holding the answer -- a hair under the 0.6 floor, so the turn answered "tidak
+    ditemukan" -- while "makanan khas kalimantan selatan" scored 0.7799 against the same
+    chunk. The corpus spells the name out (59 rows) and almost never the shorthand (2).
+    """
+    seen = _captured_query(monkeypatch)
+
+    rag_tool.rag_search(db, "apa makanan khas kalsel")
+
+    assert "kalimantan selatan" in seen["query"]
+    assert "kalsel" in seen["query"], "the words the user chose are kept, not replaced"
+
+
+def test_rag_search_embeds_a_query_with_no_abbreviation_unchanged(db, monkeypatch):
+    """A guard, and green when it was written: only the shorthand table may rewrite a
+    query, so ordinary phrasing has to reach the embedding model exactly as typed."""
+    seen = _captured_query(monkeypatch)
+
+    rag_tool.rag_search(db, "berapa masa retensi dokumen keuangan?")
+
+    assert seen["query"] == "berapa masa retensi dokumen keuangan?"
+
+
+def test_rag_search_does_not_expand_an_abbreviation_the_query_already_spells_out(db, monkeypatch):
+    """A guard, and green when it was written: repeating "kalimantan selatan" in a query
+    that already carries it only dilutes the words that were doing the work."""
+    seen = _captured_query(monkeypatch)
+
+    rag_tool.rag_search(db, "makanan khas kalsel kalimantan selatan")
+
+    assert seen["query"] == "makanan khas kalsel kalimantan selatan"

@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -5,6 +6,62 @@ from sqlalchemy.orm import Session
 from config import get_settings
 from models import Document
 from services.embedding_service import embed_query
+
+
+# Province shorthand, spelled out into the query before it is embedded.
+#
+# Measured on the live corpus: "apa makanan khas kalsel" scored 0.5939 against the chunk
+# holding the answer -- a hair under the 0.6 floor, so the turn answered "tidak
+# ditemukan" -- while "makanan khas kalimantan selatan" scored 0.7799 against the same
+# chunk. The corpus spells the names out (59 rows mention "Kalimantan Selatan") and
+# almost never the shorthand (2 rows mention "kalsel"), so the abbreviation is the gap.
+#
+# Server-side and deterministic, like the file scope: this changes how a query is
+# spelled, never which rows may be searched, and no model decides it. Provinces only --
+# that shorthand is standard and unambiguous, while an agency acronym is not, so those
+# wait for a measurement that says they are needed.
+ABBREVIATIONS = {
+    "kalsel": "kalimantan selatan",
+    "kaltim": "kalimantan timur",
+    "kalbar": "kalimantan barat",
+    "kalteng": "kalimantan tengah",
+    "kaltara": "kalimantan utara",
+    "jabar": "jawa barat",
+    "jateng": "jawa tengah",
+    "jatim": "jawa timur",
+    "dki": "jakarta",
+    "diy": "yogyakarta",
+    "sumut": "sumatera utara",
+    "sumbar": "sumatera barat",
+    "sumsel": "sumatera selatan",
+    "babel": "bangka belitung",
+    "kepri": "kepulauan riau",
+    "ntb": "nusa tenggara barat",
+    "ntt": "nusa tenggara timur",
+    "sulsel": "sulawesi selatan",
+    "sulteng": "sulawesi tengah",
+    "sulut": "sulawesi utara",
+    "sultra": "sulawesi tenggara",
+    "malut": "maluku utara",
+}
+
+_TOKEN = re.compile(r"[a-z]+")
+
+
+def _expanded(query: str) -> str:
+    """The query with any province shorthand in it spelled out after the original words.
+
+    Appended rather than substituted: what the user typed stays in the query. A shorthand
+    whose expansion is already in the query is left alone -- repeating "kalimantan
+    selatan" there only dilutes the words that were doing the work.
+    """
+    words = set(_TOKEN.findall(query.lower()))
+    spelled = [
+        full
+        for short, full in ABBREVIATIONS.items()
+        if short in words and not set(full.split()) <= words
+    ]
+    return f"{query} {' '.join(spelled)}" if spelled else query
 
 
 @dataclass(frozen=True)
@@ -31,7 +88,7 @@ def rag_search(
     matches are how off-context answers start, and an empty result tells the
     model "tidak ditemukan" instead of feeding it filler to summarise.
     """
-    vector = embed_query(query)
+    vector = embed_query(_expanded(query))
     distance = Document.embedding.cosine_distance(vector).label("distance")
 
     query_ = db.query(Document.filename, Document.content, distance)
